@@ -12,7 +12,7 @@
 
 #ifndef DEFLATE_H
 #define DEFLATE_H
-
+#define DEBREACHX
 #include "zutil.h"
 
 /* define NO_GZIP when compiling if you want to disable gzip header and
@@ -130,6 +130,20 @@ typedef struct internal_state {
     /* Actual size of window: 2*wSize, except when the user input buffer
      * is directly used as sliding window.
      */
+
+  #ifdef DEBREACHX
+    // ! for SECRET
+    short *next_taint_s;  //? window_size * 2
+    int *tainted_brs_s;   //? byte ranges of taints
+    int *cur_taint_s;     //? pointer to somewhere inside tainted_brs
+    int taint_cap_s;      //? default 20, doubled whenever not enough in taint_brs.
+
+    // ! for INPUT
+    short *next_taint_i;
+    int *tainted_brs_i;
+    int *cur_taint_i;
+    int taint_cap_i;
+  #endif
 
     Posf *prev;
     /* Link to older string with same hash index. To limit the size of this
