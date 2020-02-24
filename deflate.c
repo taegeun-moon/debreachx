@@ -1802,8 +1802,8 @@ local void fill_window(s)
             unsigned int i;
             int *temp_secrets = s->secrets->brs;
             int *temp_inputs = s->inputs->brs;
-            while (temp_secrets[1] < 0) temp_secrets += 2;
-            while (temp_inputs[1] < 0) temp_inputs += 2;
+            while (!taint_end(temp_secrets) && (temp_secrets[1] < 0 || temp_secrets[1] < s->strstart)) temp_secrets += 2;
+            while (!taint_end(temp_inputs) && (temp_inputs[1] < 0 || temp_inputs[1] < s->strstart)) temp_inputs += 2;
 
             //TODO: s->strstart부터가 아니라, s->w_size 부터 해도 되지않을까?
             for (i = s->strstart; i < s->window_size; i++) {

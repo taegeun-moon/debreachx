@@ -104,6 +104,8 @@ typedef Byte StrType;
 #define TYPE_INPUT (StrType)0b10
 #define TYPE_BOTH (StrType)0b11
 
+#define taint_end(brs) (brs[0] == 0 && brs[1] == 0)
+
 typedef struct taint_state {
   int *brs;   //? byte ranges of taints
   int *cur_taint;     //? pointer to somewhere inside tainted_brs
