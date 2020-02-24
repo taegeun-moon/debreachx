@@ -1320,11 +1320,7 @@ int matchable_debreach[4][4] = {
 #define update_type(scan, match, scan_type, match_type) \
             (scan_type |= s->types[(scan) - s->window], \
                 match_type |= s->types[(match) - s->window])
-// #define guard_type(scan_type, match_type) \
-//             (scan_type == TYPE_OTHERS || \
-//             match_type == TYPE_OTHERS || \
-//             (scan_type == TYPE_INPUT && match_type == TYPE_INPUT))
-#define guard_type(scan_type, match_type) matchable_debreach[scan_type][match_type]
+#define guard_type(scan_type, match_type) matchable[scan_type][match_type]
 #define update_and_guard_type(scan, match, scan_type, match_type) \
             (update_type(scan, match, scan_type, match_type), \
                 guard_type(scan_type, match_type))
