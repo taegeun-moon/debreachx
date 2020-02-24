@@ -246,7 +246,7 @@ ZEXTERN int ZEXPORT deflateInit OF((z_streamp strm, int level));
    this will be done by deflate().
 */
 
-
+ZEXTERN int ZEXPORT append_all_brs OF((z_streamp strm, int *brs_input, int brs_input_len, int *brs_secret, int brs_secret_len));
 ZEXTERN int ZEXPORT deflate OF((z_streamp strm, int flush));
 /*
     deflate compresses as much data as possible, and stops when the input

@@ -97,6 +97,20 @@ typedef unsigned IPos;
  * save space in the various tables. IPos is used only for parameter passing.
  */
 
+#ifdef DEBREACHX
+typedef Byte StrType;
+#define TYPE_OTHERS (StrType)0b00
+#define TYPE_SECRET (StrType)0b01
+#define TYPE_INPUT (StrType)0b10
+#define TYPE_BOTH (StrType)0b11
+
+typedef struct taint_state {
+  int *brs;   //? byte ranges of taints
+  int *cur_taint;     //? pointer to somewhere inside tainted_brs
+  int capacity;      //? default 20, doubled whenever not enough in taint_brs.
+} FAR taint_state;
+#endif
+
 typedef struct internal_state {
     z_streamp strm;      /* pointer back to this zlib stream */
     int   status;        /* as the name implies */
@@ -132,17 +146,9 @@ typedef struct internal_state {
      */
 
   #ifdef DEBREACHX
-    // ! for SECRET
-    short *next_taint_s;  //? window_size * 2
-    int *tainted_brs_s;   //? byte ranges of taints
-    int *cur_taint_s;     //? pointer to somewhere inside tainted_brs
-    int taint_cap_s;      //? default 20, doubled whenever not enough in taint_brs.
-
-    // ! for INPUT
-    short *next_taint_i;
-    int *tainted_brs_i;
-    int *cur_taint_i;
-    int taint_cap_i;
+    taint_state *secrets;
+    taint_state *inputs;
+    short *types;  //? window_size * 2
   #endif
 
     Posf *prev;

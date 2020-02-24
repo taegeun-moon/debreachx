@@ -83,6 +83,10 @@ local block_state deflate_slow   OF((deflate_state *s, int flush));
 #endif
 local block_state deflate_rle    OF((deflate_state *s, int flush));
 local block_state deflate_huff   OF((deflate_state *s, int flush));
+#ifdef DEBREACHX
+local block_state deflate_debreachx OF ((deflate_state *s, int flush));
+local int append_brs_into_strm OF ((z_streamp strm, int *brs, int len, taint_state *taint));
+#endif
 local void lm_init        OF((deflate_state *s));
 local void putShortMSB    OF((deflate_state *s, uInt b));
 local void flush_pending  OF((z_streamp strm));
@@ -93,6 +97,11 @@ local unsigned read_buf   OF((z_streamp strm, Bytef *buf, unsigned size));
       uInt longest_match  OF((deflate_state *s, IPos cur_match));
 #else
 local uInt longest_match  OF((deflate_state *s, IPos cur_match));
+#endif
+
+#ifdef DEBREACHX
+local StrType cur_str_type          OF((deflate_state *s));
+local uInt longest_match_debreachx  OF((deflate_state *s, IPos cur_match));
 #endif
 
 #ifdef ZLIB_DEBUG
@@ -330,6 +339,26 @@ int ZEXPORT deflateInit2_(strm, level, method, windowBits, memLevel, strategy,
     s->pending_buf = (uchf *) overlay;
     s->pending_buf_size = (ulg)s->lit_bufsize * (sizeof(ush)+2L);
 
+#ifdef DEBREACHX
+    s->types = (short *) ZALLOC(strm, s->w_size, 2*sizeof(short)); 
+    s->inputs = (taint_state *) ZALLOC(strm, 1, sizeof(taint_state));
+    s->secrets = (taint_state *) ZALLOC(strm, 1, sizeof(taint_state));
+
+    // printf("allocation\n");
+
+	s->secrets->capacity = 20;
+	s->secrets->brs = (int *) ZALLOC(strm, s->secrets->capacity, sizeof(int));
+	s->secrets->brs[0] = 0;
+	s->secrets->brs[1] = 0;
+	s->secrets->cur_taint = s->secrets->brs;
+
+	s->inputs->capacity = 20;
+	s->inputs->brs = (int *) ZALLOC(strm, s->inputs->capacity, sizeof(int));
+	s->inputs->brs[0] = 0;
+	s->inputs->brs[1] = 0;
+	s->inputs->cur_taint = s->inputs->brs;
+#endif
+
     if (s->window == Z_NULL || s->prev == Z_NULL || s->head == Z_NULL ||
         s->pending_buf == Z_NULL) {
         s->status = FINISH_STATE;
@@ -495,6 +524,16 @@ int ZEXPORT deflateResetKeep (strm)
 #endif
         adler32(0L, Z_NULL, 0);
     s->last_flush = Z_NO_FLUSH;
+
+#ifdef DEBREACHX
+	s->secrets->brs[0] = 0;
+	s->secrets->brs[1] = 0;
+	s->secrets->cur_taint = s->secrets->brs;
+
+	s->inputs->brs[0] = 0;
+	s->inputs->brs[1] = 0;
+	s->inputs->cur_taint = s->inputs->brs;
+#endif
 
     _tr_init(s);
 
@@ -997,11 +1036,14 @@ int ZEXPORT deflate (strm, flush)
         (flush != Z_NO_FLUSH && s->status != FINISH_STATE)) {
         block_state bstate;
 
+    #ifdef DEBREACHX
+        bstate = deflate_slow(s, flush);
+    #else
         bstate = s->level == 0 ? deflate_stored(s, flush) :
                  s->strategy == Z_HUFFMAN_ONLY ? deflate_huff(s, flush) :
                  s->strategy == Z_RLE ? deflate_rle(s, flush) :
                  (*(configuration_table[s->level].func))(s, flush);
-
+    #endif
         if (bstate == finish_started || bstate == finish_done) {
             s->status = FINISH_STATE;
         }
@@ -1087,6 +1129,14 @@ int ZEXPORT deflateEnd (strm)
     TRY_FREE(strm, strm->state->head);
     TRY_FREE(strm, strm->state->prev);
     TRY_FREE(strm, strm->state->window);
+
+#ifdef DEBREACHX
+    TRY_FREE(strm, strm->state->types);
+	free(strm->state->secrets->brs);
+	free(strm->state->inputs->brs);
+    free(strm->state->secrets);
+    free(strm->state->inputs);
+#endif
 
     ZFREE(strm, strm->state);
     strm->state = Z_NULL;
@@ -1230,6 +1280,55 @@ local void lm_init (s)
  * OUT assertion: the match length is not greater than s->lookahead.
  */
 #ifndef ASMV
+#ifdef DEBREACHX
+/**
+ * 매칭이 될 수 있는 타입 쌍을 정의하는 테이블
+ * ┌─────────┬────────┬────────┬────────┬────────┐
+ * │ (types) │ others │ secret │ input  │  both  │
+ * ├─────────┼────────┼────────┼────────┼────────┤
+ * │  others │  true  │  true  │  true  │  true  │
+ * │  secret │  true  │  false │  false │  false │
+ * │  input  │  true  │  false │  true  │  false │
+ * │  both   │  true  │  false │  false │  false │
+ * └─────────┴────────┴────────┴────────┴────────┘   
+ */
+int matchable[4][4] = {
+    {1, 1, 1, 1},
+    {1, 0, 0, 0},
+    {1, 0, 1, 0},
+    {1, 0, 0, 0}
+};
+
+/**
+ * 기존 Debreach 연구에서의 테이블
+ * ┌─────────┬────────┬────────┬────────┬────────┐
+ * │ (types) │ others │ secret │ input  │  both  │
+ * ├─────────┼────────┼────────┼────────┼────────┤
+ * │  others │  true  │  false │  true  │  false │
+ * │  secret │  false │  false │  false │  false │
+ * │  input  │  true  │  false │  true  │  false │
+ * │  both   │  false │  false │  false │  false │
+ * └─────────┴────────┴────────┴────────┴────────┘   
+ */
+int matchable_debreach[4][4] = {
+    {1, 0, 1, 0},
+    {0, 0, 0, 0},
+    {1, 0, 1, 0},
+    {0, 0, 0, 0}
+};
+
+#define update_type(scan, match, scan_type, match_type) \
+            (scan_type |= s->types[(scan) - s->window], \
+                match_type |= s->types[(match) - s->window])
+// #define guard_type(scan_type, match_type) \
+//             (scan_type == TYPE_OTHERS || \
+//             match_type == TYPE_OTHERS || \
+//             (scan_type == TYPE_INPUT && match_type == TYPE_INPUT))
+#define guard_type(scan_type, match_type) matchable_debreach[scan_type][match_type]
+#define update_and_guard_type(scan, match, scan_type, match_type) \
+            (update_type(scan, match, scan_type, match_type), \
+                guard_type(scan_type, match_type))
+#endif
 /* For 80x86 and 680x0, an optimized version will be provided in match.asm or
  * match.S. The code will be functionally equivalent.
  */
@@ -1262,6 +1361,10 @@ local uInt longest_match(s, cur_match)
     register Bytef *strend = s->window + s->strstart + MAX_MATCH;
     register Byte scan_end1  = scan[best_len-1];
     register Byte scan_end   = scan[best_len];
+#endif
+
+#ifdef DEBREACHX
+    StrType scan_type, match_type;
 #endif
 
     /* The code is optimized for HASH_BITS >= 8 and MAX_MATCH-2 multiple of 16.
@@ -1327,6 +1430,7 @@ local uInt longest_match(s, cur_match)
 
 #else /* UNALIGNED_OK */
 
+        //TODO: scan_type과 match_type 비교를 여기서도 해야함
         if (match[best_len]   != scan_end  ||
             match[best_len-1] != scan_end1 ||
             *match            != *scan     ||
@@ -1337,18 +1441,40 @@ local uInt longest_match(s, cur_match)
          * It is not necessary to compare scan[2] and match[2] since they
          * are always equal when the other bytes match, given that
          * the hash keys are equal and that HASH_BITS >= 8.
+         * Hash Collision을 테스트 하는 부분인듯?
          */
         scan += 2, match++;
         Assert(*scan == *match, "match[2]?");
+
+#ifdef DEBREACHX
+        /*
+         * 위에서 첫 3글자에 대해 match와 scan의 일치를 체크하는데,
+         * 이때 하지 않은 3글자에 대한 type 체크를 진행한다. 
+         * 혀용되지 않는 type이 있다면 continue 한다.
+         */
+        scan_type = match_type = TYPE_OTHERS;
+        update_type(scan-2, match-2, scan_type, match_type);
+        update_type(scan-1, match-1, scan_type, match_type);
+        update_type(scan, match, scan_type, match_type);
+
+        // TODO: 여기서 continue 하면 마지막 window가 짤림...
+        // 여기서 체크 안해도 뒤에서 다 해줄래나?
+        // if (!guard_type(scan_type, match_type)) continue;
+#endif
 
         /* We check for insufficient lookahead only every 8th comparison;
          * the 256th check will be made at strstart+258.
          */
         do {
-        } while (*++scan == *++match && *++scan == *++match &&
+        } while (*++scan == *++match && 
+#ifndef DEBREACHX
+                 *++scan == *++match &&
                  *++scan == *++match && *++scan == *++match &&
                  *++scan == *++match && *++scan == *++match &&
                  *++scan == *++match && *++scan == *++match &&
+#else
+                 update_and_guard_type(scan, match, scan_type, match_type) &&
+#endif
                  scan < strend);
 
         Assert(scan <= s->window+(unsigned)(s->window_size-1), "wild scan");
@@ -1469,6 +1595,122 @@ local void check_match(s, start, match, length)
 #  define check_match(s, start, match, length)
 #endif /* ZLIB_DEBUG */
 
+#ifdef DEBREACHX
+
+int ZEXPORT append_all_brs(strm, brs_input, brs_input_len, brs_secret, brs_secret_len)
+    z_streamp strm;
+    int *brs_input;
+    int brs_input_len;
+    int *brs_secret;
+    int brs_secret_len;
+{
+    taint_state *taint_inputs = strm->state->inputs;
+    taint_state *taint_secrets = strm->state->secrets;
+    // printf("append_all_brs\n");
+    // printf("%d\n", taint_inputs->capacity);
+    // printf("%d %d\n", brs_input_len, brs_secret_len);
+
+    append_brs_into_strm(strm, brs_input, brs_input_len, taint_inputs);
+    append_brs_into_strm(strm, brs_secret, brs_secret_len, taint_secrets);
+
+    return 0;
+}
+
+/* ===========================================================================
+ * Adds the byte ranges in brs to the tainted bytes ranges in the deflate
+ * state.
+ * The name was originally tainte_brs in debreach, 
+ * but modified for better descriptive name.
+ * - len is the the number of unsigned ints in the array including the
+ *   terminator
+ * - This should only be called after debreachInit is called
+ */
+// * this function is called once, but designed to be called multiple time
+int append_brs_into_strm(strm, brs, len, taint)
+    z_streamp strm;
+    int *brs;
+    int len;
+    taint_state *taint;
+{
+    if (len == 0) {
+        return 0;
+    }
+
+    deflate_state *state = strm->state;
+    int *temp = taint->brs;
+    unsigned int cur_size = 0; // ? current taint_brs size
+    while(!(temp[0] == 0 && temp[1] == 0)) {
+        cur_size += 2;
+        temp += 2;
+    }
+
+    //! resize tainted_brs inside deflate_state.
+    //? tainted_brs contains the whole brs.
+    //? Yet, it seems like that it supports feeding brs multiple times.
+    unsigned int needed = cur_size + len;
+    unsigned int new_size = 0;
+    if (needed > taint->capacity) {
+        unsigned int cur_offset = taint->cur_taint - taint->brs;
+        while (taint->capacity < needed) {
+            taint->capacity *= 2;
+        }
+        new_size = taint->capacity * sizeof(int);
+        taint->brs = (int *) realloc(taint->brs, new_size);
+        if (taint->brs == NIL) {
+            // TODO: better alloc error handling
+            taint->capacity = 0;
+            return -1;
+        }
+        taint->cur_taint = taint->brs + cur_offset;
+    }
+
+    unsigned int i = 0;
+    int offset = (int) (state->strstart + state->lookahead);
+    for(i = 0; i <len; i ++) {
+        taint->brs[cur_size + i] = brs[i] + offset;
+    }
+
+    taint->brs[cur_size + len - 2] = 0;
+    taint->brs[cur_size + len - 1] = 0;
+    /* 
+    // if the the next_taint info for some window index *i* was set while we had less
+	// than MAX_MATCH bytes of lookahead, it's possible that next_taint[i] is no longer
+	// valid because some of the new lookahead may be tainted. Check if this is the case
+	// and update accordingly.
+	// tainted_brs[cur_size] is beginning of the next new tainted region.
+	//
+	// First a sanity check
+    if ((unsigned int) taint->brs[cur_size] < state->strstart) {
+		// A new tainted region appears in a content we've alread processed
+		// TODO: handle this gracefully or throw an error or something
+        // ? Translation in Korean of above description
+        // ? 이미 압축진행한 부분에 대해 새로운 brs가 들어온 경우
+        // ? 지금은 brs를 최초 한번만 로드하기 때문에 고려하지 않아도 될것같다.
+    } else { 
+        unsigned int needs_update; // ? is window need to be updated?
+        if (taint->brs[cur_size] < MAX_MATCH)
+            needs_update = 0;
+        else
+            needs_update = (unsigned int) (taint->brs[cur_size] - MAX_MATCH);
+
+        while (needs_update < state->strstart) {
+            if (taint->next_taint[needs_update] <= MAX_MATCH &&
+                taint->next_taint[needs_update] <=
+                taint->brs[cur_size] - needs_update) {
+                needs_update += (unsigned short) taint->next_taint[needs_update];
+                while (taint->next_taint[needs_update] == 0 && needs_update < state->strstart)
+                    needs_update++;
+            } else {
+                taint->next_taint[needs_update] = taint->brs[cur_size] - needs_update;
+                needs_update++;
+            }
+        }
+    }
+    */
+    return 0;
+}
+#endif
+
 /* ===========================================================================
  * Fill the window when the lookahead becomes insufficient.
  * Updates strstart and lookahead.
@@ -1510,11 +1752,84 @@ local void fill_window(s)
         if (s->strstart >= wsize+MAX_DIST(s)) {
 
             zmemcpy(s->window, s->window+wsize, (unsigned)wsize - more);
+#ifdef DEBREACHX
+            if (s->types != NIL) {
+                memcpy(s->types, s->types+wsize, (unsigned)wsize*sizeof(*s->types));
+            }
+            if (s->secrets->brs != NIL) {
+                int *temp = s->secrets->brs;
+                while (!(temp[0] == 0 && temp[1] == 0)) { // ? while there are more taints
+                    if (temp[0] < 0 && temp[1] < 0) { // already passed
+                        //pass
+                    } else if (s->strstart > temp[0]) {
+                        temp[0] = -1;
+                        if (s->strstart > temp[1])
+                            temp[1] = -1;
+                        else
+                            temp[1] -= wsize;
+                    } else {
+                        temp[0] -= wsize;
+                        temp[1] -= wsize;
+                    }
+                    temp += 2;
+                }
+            }
+            if (s->inputs->brs != NIL) {
+                int *temp = s->inputs->brs;
+                while (!(temp[0] == 0 && temp[1] == 0)) { // ? while there are more taints
+                    if (temp[0] < 0 && temp[1] < 0) { // already passed
+                        //pass
+                    } else if (s->strstart > temp[0]) {
+                        temp[0] = -1;
+                        if (s->strstart > temp[1])
+                            temp[1] = -1;
+                        else
+                            temp[1] -= wsize;
+                    } else {
+                        temp[0] -= wsize;
+                        temp[1] -= wsize;
+                    }
+                    temp += 2;
+                }
+            }
+#endif
             s->match_start -= wsize;
             s->strstart    -= wsize; /* we now have strstart >= MAX_DIST */
             s->block_start -= (long) wsize;
             slide_hash(s);
             more += wsize;
+
+#ifdef DEBREACHX
+            /*
+             * 새로 들어온 window에 대응하는 types를 채워준다
+             */
+            unsigned int i;
+            int *temp_secrets = s->secrets->brs;
+            int *temp_inputs = s->inputs->brs;
+            while (temp_secrets[1] < 0) temp_secrets += 2;
+            while (temp_inputs[1] < 0) temp_inputs += 2;
+
+            //TODO: s->strstart부터가 아니라, s->w_size 부터 해도 되지않을까?
+            for (i = s->strstart; i < s->window_size; i++) {
+                if (!(temp_secrets[0] == 0 && temp_secrets[1] == 0) && i > temp_secrets[1])
+                    temp_secrets += 2;
+                if (!(temp_inputs[0] == 0 && temp_inputs[1] == 0) && i > temp_inputs[1])
+                    temp_inputs += 2;
+
+                if (!(temp_secrets[0] == 0 && temp_secrets[1] == 0) &&
+                    temp_secrets[0] <= i && i <= temp_secrets[1]) {
+                    s->types[i] = TYPE_SECRET;
+                    // printf("secret\n");
+                } else if (!(temp_inputs[0] == 0 && temp_inputs[1] == 0) &&
+                    temp_inputs[0] <= i && i <= temp_inputs[1]) {
+                    s->types[i] = TYPE_INPUT;
+                    // printf("input\n");
+                } else {
+                    s->types[i] = TYPE_OTHERS;
+                    // printf("others\n");
+                }
+            }
+#endif
         }
         if (s->strm->avail_in == 0) break;
 
@@ -2161,3 +2476,163 @@ local block_state deflate_huff(s, flush)
         FLUSH_BLOCK(s, 0);
     return block_done;
 }
+
+#ifndef FASTEST
+#ifdef DEBREACHX
+
+local block_state deflate_debreachx(s, flush)
+    deflate_state *s;
+    int flush;
+{
+    IPos hash_head;          /* head of hash chain */
+    int bflush;              /* set if current block must be flushed */
+
+/*
+    s->secrets->cur_taint = s->secrets->brs;
+    s->inputs->cur_taint = s->inputs->brs;
+    
+    while(!(s->secrets->cur_taint[0] == 0 && s->secrets->cur_taint[1] == 0)) {
+        if (s->secrets->cur_taint[0] < 0 && s->secrets->cur_taint[1] < 0) {
+            s->secrets->cur_taint += 2;
+            // passed this byte range already
+        } else if (s->strstart >= s->secrets->cur_taint[0] && s->strstart <= s->secrets->cur_taint[1]) {
+            break;
+        } else if (s->strstart > s->secrets->cur_taint[1]) {
+            s->secrets->cur_taint += 2;
+        } else if (s->strstart < s->secrets->cur_taint[0]) {
+            break;
+        }
+    }
+    
+    while(!(s->inputs->cur_taint[0] == 0 && s->inputs->cur_taint[1] == 0)) {
+        if (s->inputs->cur_taint[0] < 0 && s->inputs->cur_taint[1] < 0) {
+            s->inputs->cur_taint += 2;
+            // passed this byte range already
+        } else if (s->strstart >= s->inputs->cur_taint[0] && s->strstart <= s->inputs->cur_taint[1]) {
+            break;
+        } else if (s->strstart > s->inputs->cur_taint[1]) {
+            s->secrets->cur_taint += 2;
+        } else if (s->strstart < s->inputs->cur_taint[0]) {
+            break;
+        }
+    }
+*/
+    /* Process the input block. */
+    for (;;) {
+        /* Make sure that we always have enough lookahead, except
+         * at the end of the input file. We need MAX_MATCH bytes
+         * for the next match, plus MIN_MATCH bytes to insert the
+         * string following the next match.
+         */
+        if (s->lookahead < MIN_LOOKAHEAD) {
+            fill_window(s);
+            if (s->lookahead < MIN_LOOKAHEAD && flush == Z_NO_FLUSH) {
+                return need_more;
+            }
+            if (s->lookahead == 0) break; /* flush the current block */
+        }
+
+        /* Insert the string window[strstart .. strstart+2] in the
+         * dictionary, and set hash_head to the head of the hash chain:
+         */
+        hash_head = NIL;
+        if (s->lookahead >= MIN_MATCH) {
+            INSERT_STRING(s, s->strstart, hash_head);
+        }
+
+        /* Find the longest match, discarding those <= prev_length.
+         */
+        s->prev_length = s->match_length, s->prev_match = s->match_start;
+        s->match_length = MIN_MATCH-1;
+
+        if (hash_head != NIL && s->prev_length < s->max_lazy_match &&
+            s->strstart - hash_head <= MAX_DIST(s)) {
+            /* To simplify the code, we prevent matches with the string
+             * of window index 0 (in particular we have to avoid a match
+             * of the string with itself at the start of the input file).
+             */
+            s->match_length = longest_match (s, hash_head);
+            /* longest_match() sets match_start */
+
+            if (s->match_length <= 5 && (s->strategy == Z_FILTERED
+#if TOO_FAR <= 32767
+                || (s->match_length == MIN_MATCH &&
+                    s->strstart - s->match_start > TOO_FAR)
+#endif
+                )) {
+
+                /* If prev_match is also MIN_MATCH, match_start is garbage
+                 * but we will ignore the current match anyway.
+                 */
+                s->match_length = MIN_MATCH-1;
+            }
+        }
+        /* If there was a match at the previous step and the current
+         * match is not better, output the previous match:
+         */
+        if (s->prev_length >= MIN_MATCH && s->match_length <= s->prev_length) {
+            uInt max_insert = s->strstart + s->lookahead - MIN_MATCH;
+            /* Do not insert strings in hash table beyond this. */
+
+            check_match(s, s->strstart-1, s->prev_match, s->prev_length);
+
+            _tr_tally_dist(s, s->strstart -1 - s->prev_match,
+                           s->prev_length - MIN_MATCH, bflush);
+
+            /* Insert in hash table all strings up to the end of the match.
+             * strstart-1 and strstart are already inserted. If there is not
+             * enough lookahead, the last two strings are not inserted in
+             * the hash table.
+             */
+            s->lookahead -= s->prev_length-1;
+            s->prev_length -= 2;
+            do {
+                if (++s->strstart <= max_insert) {
+                    INSERT_STRING(s, s->strstart, hash_head);
+                }
+            } while (--s->prev_length != 0);
+            s->match_available = 0;
+            s->match_length = MIN_MATCH-1;
+            s->strstart++;
+
+            if (bflush) FLUSH_BLOCK(s, 0);
+
+        } else if (s->match_available) {
+            /* If there was no match at the previous position, output a
+             * single literal. If there was a match but the current match
+             * is longer, truncate the previous match to a single literal.
+             */
+            Tracevv((stderr,"%c", s->window[s->strstart-1]));
+            _tr_tally_lit(s, s->window[s->strstart-1], bflush);
+            if (bflush) {
+                FLUSH_BLOCK_ONLY(s, 0);
+            }
+            s->strstart++;
+            s->lookahead--;
+            if (s->strm->avail_out == 0) return need_more;
+        } else {
+            /* There is no previous match to compare with, wait for
+             * the next step to decide.
+             */
+            s->match_available = 1;
+            s->strstart++;
+            s->lookahead--;
+        }
+    }
+    Assert (flush != Z_NO_FLUSH, "no flush?");
+    if (s->match_available) {
+        Tracevv((stderr,"%c", s->window[s->strstart-1]));
+        _tr_tally_lit(s, s->window[s->strstart-1], bflush);
+        s->match_available = 0;
+    }
+    s->insert = s->strstart < MIN_MATCH-1 ? s->strstart : MIN_MATCH-1;
+    if (flush == Z_FINISH) {
+        FLUSH_BLOCK(s, 1);
+        return finish_done;
+    }
+    if (s->last_lit)
+        FLUSH_BLOCK(s, 0);
+    return block_done;
+}
+#endif /* FASTEST */
+#endif /* DEBREACHX */
