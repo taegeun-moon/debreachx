@@ -1426,7 +1426,6 @@ local uInt longest_match(s, cur_match)
 
 #else /* UNALIGNED_OK */
 
-        //TODO: scan_type과 match_type 비교를 여기서도 해야함
         if (match[best_len]   != scan_end  ||
             match[best_len-1] != scan_end1 ||
             *match            != *scan     ||
@@ -1453,9 +1452,10 @@ local uInt longest_match(s, cur_match)
         update_type(scan-1, match-1, scan_type, match_type);
         update_type(scan, match, scan_type, match_type);
 
-        // TODO: 여기서 continue 하면 마지막 window가 짤림...
-        // 여기서 체크 안해도 뒤에서 다 해줄래나?
-        // if (!guard_type(scan_type, match_type)) continue;
+        if (!guard_type(scan_type, match_type)) {
+            scan -= 2;
+            continue;
+        }
 #endif
 
         /* We check for insufficient lookahead only every 8th comparison;
