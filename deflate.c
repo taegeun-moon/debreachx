@@ -1750,7 +1750,7 @@ local void fill_window(s)
             zmemcpy(s->window, s->window+wsize, (unsigned)wsize - more);
 #ifdef DEBREACHX
             if (s->types != NIL) {
-                memcpy(s->types, s->types+wsize, (unsigned)wsize*sizeof(*s->types));
+                zmemcpy(s->types, s->types+wsize, (unsigned)wsize*sizeof(*s->types));
             }
             if (s->secrets->brs != NIL) {
                 int *temp = s->secrets->brs;
@@ -1799,7 +1799,7 @@ local void fill_window(s)
             /*
              * 새로 들어온 window에 대응하는 types를 채워준다
              */
-            unsigned int i;
+            int i;
             int *temp_secrets = s->secrets->brs;
             int *temp_inputs = s->inputs->brs;
             while (!taint_end(temp_secrets) && (temp_secrets[1] < 0 || temp_secrets[1] < s->strstart)) temp_secrets += 2;
