@@ -1871,6 +1871,27 @@ local void fill_window(s)
 
     } while (s->lookahead < MIN_LOOKAHEAD && s->strm->avail_in != 0);
 
+    // int i;
+    // int *temp_secrets = s->secrets->brs;
+    // int *temp_inputs = s->inputs->brs;
+    // while (!taint_end(temp_secrets) && (temp_secrets[1] < 0 || temp_secrets[1] < s->strstart)) temp_secrets += 2;
+    // while (!taint_end(temp_inputs) && (temp_inputs[1] < 0 || temp_inputs[1] < s->strstart)) temp_inputs += 2;
+
+    // while (!taint_end(temp_secrets)) {
+    //     const int start = temp_secrets[0] < 0 ? s->strstart :
+    //         temp_secrets[0] > (int)s->strstart ? temp_secrets[0] : (int)s->strstart;
+    //     printf("%d <%d, %d>\n", s->strstart, temp_secrets[0], temp_secrets[1]);
+    //     if (start <= temp_secrets[1] && start < s->strstart+s->lookahead) {
+    //         for (i = start; i <= temp_secrets[1] && i < s->strstart+s->lookahead; i++) {
+    //             printf("%c", (s->window[i]));
+    //         }
+    //         printf("\n");
+    //     } else {
+    //         break;
+    //     }
+    //     temp_secrets += 2;
+    // }
+
     /* If the WIN_INIT bytes after the end of the current data have never been
      * written, then zero those bytes in order to avoid memory check reports of
      * the use of uninitialized (or uninitialised as Julian writes) bytes by
