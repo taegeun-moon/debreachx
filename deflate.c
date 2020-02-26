@@ -1312,13 +1312,22 @@ local void lm_init (s)
  * │  both   │  true  │  false │  false │  false │
  * └─────────┴────────┴────────┴────────┴────────┘   
  */
+
+#ifdef ALLOW_MATCH_SECRETS
 int matchable[4][4] = {
     {1, 1, 1, 1},
     {1, 1, 0, 0},
     {1, 0, 1, 0},
     {1, 0, 0, 0}
 };
-
+#else
+int matchable[4][4] = {
+    {1, 1, 1, 1},
+    {1, 0, 0, 0},
+    {1, 0, 1, 0},
+    {1, 0, 0, 0}
+};
+#endif
 /**
  * 기존 Debreach 연구에서의 테이블
  * ┌─────────┬────────┬────────┬────────┬────────┐
@@ -1486,9 +1495,11 @@ local uInt longest_match(s, cur_match)
          * the 256th check will be made at strstart+258.
          */
         do {
+#ifdef ALLOW_MATCH_SECRETS
             if (!((scan_type & match_type) & TYPE_SECRET)) { // not both contain SECRET
                 final_scan = scan + 1;
             }
+#endif
         } while (*++scan == *++match && 
 #ifndef DEBREACHX
                  *++scan == *++match &&
@@ -1507,8 +1518,6 @@ local uInt longest_match(s, cur_match)
         if (final_scan != scan && (nonce[nonce_idx] % 2) /* !random_ok */) {
             scan = final_scan; // revert matching secret
         }
-#else
-        scan = final_scan;
 #endif
 
         len = MAX_MATCH - (int)(strend - scan);
