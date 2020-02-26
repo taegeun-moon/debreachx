@@ -13,6 +13,7 @@
 #ifndef DEFLATE_H
 #define DEFLATE_H
 #define DEBREACHX
+#define ALLOW_MATCH_SECRETS
 #include "zutil.h"
 
 /* define NO_GZIP when compiling if you want to disable gzip header and

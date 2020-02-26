@@ -50,6 +50,12 @@
 /* @(#) $Id$ */
 
 #include "deflate.h"
+#ifdef DEBREACHX
+#include <time.h>
+#include <stdlib.h>
+#include <gcrypt.h>
+#define NEED_LIBGCRYPT_VERSION "1.8.5"
+#endif
 
 const char deflate_copyright[] =
    " deflate 1.2.11 Copyright 1995-2017 Jean-loup Gailly and Mark Adler ";
@@ -340,6 +346,20 @@ int ZEXPORT deflateInit2_(strm, level, method, windowBits, memLevel, strategy,
     s->pending_buf_size = (ulg)s->lit_bufsize * (sizeof(ush)+2L);
 
 #ifdef DEBREACHX
+    if (!gcry_check_version (NEED_LIBGCRYPT_VERSION)){
+       fprintf (stderr, "libgcrypt is too old (need %s, have %s)\n",
+        NEED_LIBGCRYPT_VERSION, gcry_check_version(NULL));
+       exit(2);
+    }
+
+    /* Disable secure memory.  */
+    gcry_control (GCRYCTL_DISABLE_SECMEM, 0);
+
+    /* Tell Libgcrypt that initialization has completed. */
+    gcry_control (GCRYCTL_INITIALIZATION_FINISHED, 0);
+
+    srand(time(NULL));
+
     s->types = (short *) ZALLOC(strm, s->w_size, 2*sizeof(short)); 
     s->inputs = (taint_state *) ZALLOC(strm, 1, sizeof(taint_state));
     s->secrets = (taint_state *) ZALLOC(strm, 1, sizeof(taint_state));
@@ -1294,7 +1314,7 @@ local void lm_init (s)
  */
 int matchable[4][4] = {
     {1, 1, 1, 1},
-    {1, 0, 0, 0},
+    {1, 1, 0, 0},
     {1, 0, 1, 0},
     {1, 0, 0, 0}
 };
@@ -1361,6 +1381,9 @@ local uInt longest_match(s, cur_match)
 
 #ifdef DEBREACHX
     StrType scan_type, match_type;
+    Bytef *final_scan; // last match where not both have secret
+    Byte nonce[1];
+    uInt nonce_idx = 0;
 #endif
 
     /* The code is optimized for HASH_BITS >= 8 and MAX_MATCH-2 multiple of 16.
@@ -1382,6 +1405,7 @@ local uInt longest_match(s, cur_match)
     do {
         Assert(cur_match < s->strstart, "no future");
         match = s->window + cur_match;
+        final_scan = NIL;
 
         /* Skip to next match if the match length cannot increase
          * or if the match length is less than 2.  Note that the checks below
@@ -1462,6 +1486,9 @@ local uInt longest_match(s, cur_match)
          * the 256th check will be made at strstart+258.
          */
         do {
+            if (!((scan_type & match_type) & TYPE_SECRET)) { // not both contain SECRET
+                final_scan = scan + 1;
+            }
         } while (*++scan == *++match && 
 #ifndef DEBREACHX
                  *++scan == *++match &&
@@ -1474,6 +1501,15 @@ local uInt longest_match(s, cur_match)
                  scan < strend);
 
         Assert(scan <= s->window+(unsigned)(s->window_size-1), "wild scan");
+
+#ifdef ALLOW_MATCH_SECRETS
+        gcry_randomize(nonce, sizeof(nonce), GCRY_WEAK_RANDOM);
+        if (final_scan != scan && (nonce[nonce_idx] % 2) /* !random_ok */) {
+            scan = final_scan; // revert matching secret
+        }
+#else
+        scan = final_scan;
+#endif
 
         len = MAX_MATCH - (int)(strend - scan);
         scan = strend - MAX_MATCH;
