@@ -1750,6 +1750,7 @@ local void fill_window(s)
             zmemcpy(s->window, s->window+wsize, (unsigned)wsize - more);
 #ifdef DEBREACHX
             if (s->types != NIL) {
+                //TODO: only slides as far as (unsigned)wsize - more
                 zmemcpy(s->types, s->types+wsize, (unsigned)wsize*sizeof(*s->types));
             }
             if (s->secrets->brs != NIL) {
@@ -1806,6 +1807,7 @@ local void fill_window(s)
             while (!taint_end(temp_inputs) && (temp_inputs[1] < 0 || temp_inputs[1] < s->strstart)) temp_inputs += 2;
 
             //TODO: s->strstart부터가 아니라, s->w_size 부터 해도 되지않을까?
+            //TODO: maybe updating while ( i < s->strstart + s->lookahead ) will be enough
             for (i = s->strstart; i < s->window_size; i++) {
                 if (!(temp_secrets[0] == 0 && temp_secrets[1] == 0) && i > temp_secrets[1])
                     temp_secrets += 2;
