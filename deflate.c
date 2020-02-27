@@ -1841,38 +1841,6 @@ local void fill_window(s)
             slide_hash(s);
             more += wsize;
 
-#ifdef DEBREACHX
-            /*
-             * 새로 들어온 window에 대응하는 types를 채워준다
-             */
-            int i;
-            int *temp_secrets = s->secrets->brs;
-            int *temp_inputs = s->inputs->brs;
-            while (!taint_end(temp_secrets) && (temp_secrets[1] < 0 || temp_secrets[1] < s->strstart)) temp_secrets += 2;
-            while (!taint_end(temp_inputs) && (temp_inputs[1] < 0 || temp_inputs[1] < s->strstart)) temp_inputs += 2;
-
-            //TODO: s->strstart부터가 아니라, s->w_size 부터 해도 되지않을까?
-            //TODO: maybe updating while ( i < s->strstart + s->lookahead ) will be enough
-            for (i = s->strstart; i < s->window_size; i++) {
-                if (!(temp_secrets[0] == 0 && temp_secrets[1] == 0) && i > temp_secrets[1])
-                    temp_secrets += 2;
-                if (!(temp_inputs[0] == 0 && temp_inputs[1] == 0) && i > temp_inputs[1])
-                    temp_inputs += 2;
-
-                if (!(temp_secrets[0] == 0 && temp_secrets[1] == 0) &&
-                    temp_secrets[0] <= i && i <= temp_secrets[1]) {
-                    s->types[i] = TYPE_SECRET;
-                    // printf("secret\n");
-                } else if (!(temp_inputs[0] == 0 && temp_inputs[1] == 0) &&
-                    temp_inputs[0] <= i && i <= temp_inputs[1]) {
-                    s->types[i] = TYPE_INPUT;
-                    // printf("input\n");
-                } else {
-                    s->types[i] = TYPE_OTHERS;
-                    // printf("others\n");
-                }
-            }
-#endif
         }
         if (s->strm->avail_in == 0) break;
 
@@ -1891,6 +1859,40 @@ local void fill_window(s)
 
         n = read_buf(s->strm, s->window + s->strstart + s->lookahead, more);
         s->lookahead += n;
+
+
+#ifdef DEBREACHX
+        /*
+            * 새로 들어온 window에 대응하는 types를 채워준다
+            */
+        int i;
+        int *temp_secrets = s->secrets->brs;
+        int *temp_inputs = s->inputs->brs;
+        while (!taint_end(temp_secrets) && (temp_secrets[1] < 0 || temp_secrets[1] < s->strstart)) temp_secrets += 2;
+        while (!taint_end(temp_inputs) && (temp_inputs[1] < 0 || temp_inputs[1] < s->strstart)) temp_inputs += 2;
+
+        //TODO: s->strstart부터가 아니라, s->w_size 부터 해도 되지않을까?
+        //TODO: maybe updating while ( i < s->strstart + s->lookahead ) will be enough
+        for (i = s->strstart; i < s->window_size; i++) {
+            if (!(temp_secrets[0] == 0 && temp_secrets[1] == 0) && i > temp_secrets[1])
+                temp_secrets += 2;
+            if (!(temp_inputs[0] == 0 && temp_inputs[1] == 0) && i > temp_inputs[1])
+                temp_inputs += 2;
+
+            if (!(temp_secrets[0] == 0 && temp_secrets[1] == 0) &&
+                temp_secrets[0] <= i && i <= temp_secrets[1]) {
+                s->types[i] = TYPE_SECRET;
+                // printf("secret\n");
+            } else if (!(temp_inputs[0] == 0 && temp_inputs[1] == 0) &&
+                temp_inputs[0] <= i && i <= temp_inputs[1]) {
+                s->types[i] = TYPE_INPUT;
+                // printf("input\n");
+            } else {
+                s->types[i] = TYPE_OTHERS;
+                // printf("others\n");
+            }
+        }
+#endif
 
         /* Initialize the hash value now that we have some input: */
         if (s->lookahead + s->insert >= MIN_MATCH) {
