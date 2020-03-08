@@ -1314,6 +1314,7 @@ local void lm_init (s)
  */
 
 #ifdef ALLOW_MATCH_SECRETS
+#define MATCH_PROB 5
 int matchable[4][4] = {
     {1, 1, 1, 1},
     {1, 1, 0, 0},
@@ -1390,9 +1391,8 @@ local uInt longest_match(s, cur_match)
 
 #ifdef DEBREACHX
     StrType scan_type, match_type;
-    Bytef *final_scan; // last match where not both have secret
     Byte nonce[1];
-    uInt nonce_idx = 0;
+    Byte allow_secret;
 #endif
 
     /* The code is optimized for HASH_BITS >= 8 and MAX_MATCH-2 multiple of 16.
@@ -1414,7 +1414,7 @@ local uInt longest_match(s, cur_match)
     do {
         Assert(cur_match < s->strstart, "no future");
         match = s->window + cur_match;
-        final_scan = NIL;
+        allow_secret = 0;
 
         /* Skip to next match if the match length cannot increase
          * or if the match length is less than 2.  Note that the checks below
@@ -1496,8 +1496,11 @@ local uInt longest_match(s, cur_match)
          */
         do {
 #ifdef ALLOW_MATCH_SECRETS
-            if (!((scan_type & match_type) & TYPE_SECRET)) { // not both contain SECRET
-                final_scan = scan + 1;
+            // if matching secrets
+            if (!allow_secret && (scan_type & match_type) & TYPE_SECRET) {
+                gcry_randomize(nonce, sizeof(nonce), GCRY_WEAK_RANDOM);
+                allow_secret = (*nonce % 10) < MATCH_PROB;
+                if (!allow_secret) break;
             }
 #endif
         } while (*++scan == *++match && 
@@ -1513,12 +1516,6 @@ local uInt longest_match(s, cur_match)
 
         Assert(scan <= s->window+(unsigned)(s->window_size-1), "wild scan");
 
-#ifdef ALLOW_MATCH_SECRETS
-        gcry_randomize(nonce, sizeof(nonce), GCRY_WEAK_RANDOM);
-        if (final_scan != scan && (nonce[nonce_idx] % 2) /* !random_ok */) {
-            scan = final_scan; // revert matching secret
-        }
-#endif
 
         len = MAX_MATCH - (int)(strend - scan);
         scan = strend - MAX_MATCH;
@@ -1535,6 +1532,16 @@ local uInt longest_match(s, cur_match)
             scan_end1  = scan[best_len-1];
             scan_end   = scan[best_len];
 #endif
+            // printf("Match : %d, Scan : %d\n", match_type, scan_type);
+            // unsigned int i;
+            // for (i = 0; i < len; i++) {
+            //     printf("%c", s->window[cur_match + i]);
+            // }
+            // printf("\n");
+            // for (i = 0; i < len; i++) {
+            //     printf("%c", s->window[s->strstart + i]);
+            // }
+            // printf("\n");
         }
     } while ((cur_match = prev[cur_match & wmask]) > limit
              && --chain_length != 0);
@@ -1859,6 +1866,14 @@ local void fill_window(s)
 
         n = read_buf(s->strm, s->window + s->strstart + s->lookahead, more);
         s->lookahead += n;
+
+        // printf("New data : %d\n", n);
+        // int j;
+        // for (j = 0; j < n; j++){
+        //     printf("%c", (s->window + s->strstart)[j]);
+        // }
+        // printf("\n");
+        // printf("end of new data\n");
 
 
 #ifdef DEBREACHX
