@@ -720,6 +720,12 @@ int main(argc, argv)
                     file_uncompress(*argv);
                 }
             } else {
+#ifdef DEBREACHX
+                brs_input_str = read_br_file("brs_input");
+                brs_secret_str = read_br_file("brs_secret");
+                brs_input = parseBRS(brs_input_str, &brs_input_len);
+                brs_secret = parseBRS(brs_secret_str, &brs_secret_len);
+#endif
                 if (copyout) {
                     FILE * in = fopen(*argv, "rb");
 
@@ -729,15 +735,12 @@ int main(argc, argv)
                         file = gzdopen(fileno(stdout), outmode);
                         if (file == NULL) error("can't gzdopen stdout");
 
+                        append_all_brs(&(file->strm), brs_input, brs_input_len, brs_secret, brs_secret_len);
                         gz_compress(in, file);
                     }
 
                 } else {
 #ifdef DEBREACHX
-                    brs_input_str = read_br_file("brs_input");
-                    brs_secret_str = read_br_file("brs_secret");
-                    brs_input = parseBRS(brs_input_str, &brs_input_len);
-                    brs_secret = parseBRS(brs_secret_str, &brs_secret_len);
                     file_compress(*argv, outmode, brs_input, brs_input_len, brs_secret, brs_secret_len);
 #endif
                     // file_compress(*argv, outmode);
