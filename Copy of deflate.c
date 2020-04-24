@@ -195,7 +195,6 @@ local const config configuration_table[10] = {
     s->head[s->ins_h] = (Pos)(str))
 #else
 #define INSERT_STRING(s, str, match_head) \
-    blake3_hasher_update(s->hasher, s->window + s->strstart, 1), \
    (UPDATE_HASH(s, s->ins_h, s->window[(str) + (MIN_MATCH-1)]), \
     match_head = s->prev[(str) & s->w_mask] = s->head[s->ins_h], \
     s->head[s->ins_h] = (Pos)(str))
@@ -361,13 +360,13 @@ int ZEXPORT deflateInit2_(strm, level, method, windowBits, memLevel, strategy,
 
     srand(time(NULL));
 
+    s->generator = 398753627; // Constant  IV
+
     s->types = (short *) ZALLOC(strm, s->w_size, 2*sizeof(short)); 
     s->inputs = (taint_state *) ZALLOC(strm, 1, sizeof(taint_state));
     s->secrets = (taint_state *) ZALLOC(strm, 1, sizeof(taint_state));
 
-    s->skip_len = 0;
-    s->hasher = (blake3_hasher *) ZALLOC(strm, 1, sizeof(blake3_hasher));
-    blake3_hasher_init(s->hasher);
+    // printf("allocation\n");
 
 	s->secrets->capacity = 20;
 	s->secrets->brs = (int *) ZALLOC(strm, s->secrets->capacity, sizeof(int));
@@ -1316,8 +1315,9 @@ local void lm_init (s)
  * └─────────┴────────┴────────┴────────┴────────┘   
  */
 
+#define MAX_CUTOFF 5  // 0 <= On <= MAX_CUTOFF
 #ifdef ALLOW_MATCH_SECRETS
-#define MATCH_PROB 0
+#define MATCH_PROB 1
 int matchable[4][4] = {
     {1, 1, 1, 1},
     {1, 1, 0, 0},
@@ -1351,14 +1351,36 @@ int matchable_debreach[4][4] = {
 };
 
 #define update_type(scan, match, scan_type, match_type) \
-            (prev_scan_type = scan_type, \
-                prev_match_type = match_type, \
-                scan_type |= s->types[(scan) - s->window], \
+            (scan_type |= s->types[(scan) - s->window], \
                 match_type |= s->types[(match) - s->window])
 #define guard_type(scan_type, match_type) matchable[scan_type][match_type]
 #define update_and_guard_type(scan, match, scan_type, match_type) \
             (update_type(scan, match, scan_type, match_type), \
                 guard_type(scan_type, match_type))
+
+unsigned int ELFHash(str, length)
+    const unsigned char* str;
+    unsigned int length;
+{
+    unsigned int hash = 0;
+    unsigned int x    = 0;
+    unsigned int i    = 0;
+
+    for (i = 0; i < length; ++str, ++i)
+    {
+        hash = (hash << 4) + (*str);
+
+        if ((x = hash & 0xF0000000L) != 0)
+        {
+            hash ^= (x >> 24);
+        }
+
+        hash &= ~x;
+    }
+
+    return hash;
+}
+
 #endif
 /* For 80x86 and 680x0, an optimized version will be provided in match.asm or
  * match.S. The code will be functionally equivalent.
@@ -1395,17 +1417,11 @@ local uInt longest_match(s, cur_match)
 #endif
 
 #ifdef DEBREACHX
-    StrType scan_type = 0, match_type = 0,
-            prev_scan_type = 0, prev_match_type = 0,
-            best_type = 0;
+    StrType scan_type, match_type;
     Byte nonce[1];
     Byte allow_secret;
-    IPos orig_cur_match = cur_match;
-    uInt pure_len = 0, best_pure_len = 0;
-    s->skip_len = 0;
 #endif
 
-    // printf("Find match for : %c%c%c%c%c\n", s->window[s->strstart], s->window[s->strstart+1], s->window[s->strstart+2], s->window[s->strstart+3], s->window[s->strstart+4]);
     /* The code is optimized for HASH_BITS >= 8 and MAX_MATCH-2 multiple of 16.
      * It is easy to get rid of this optimization if necessary.
      */
@@ -1426,7 +1442,6 @@ local uInt longest_match(s, cur_match)
         Assert(cur_match < s->strstart, "no future");
         match = s->window + cur_match;
         allow_secret = 0;
-        pure_len = 0;
 
         /* Skip to next match if the match length cannot increase
          * or if the match length is less than 2.  Note that the checks below
@@ -1508,25 +1523,14 @@ local uInt longest_match(s, cur_match)
          */
         do {
 #ifdef ALLOW_MATCH_SECRETS
-            blake3_hasher_update(s->hasher, scan, 1);
-            if ((match_type == TYPE_SECRET && prev_match_type == TYPE_OTHERS) ||
-                (scan_type == TYPE_SECRET && prev_scan_type == TYPE_OTHERS)) {
-                pure_len = MAX_MATCH - (int)(strend - scan);
-            }
-            if ((s->types[(match) - s->window] == TYPE_OTHERS && prev_match_type == TYPE_SECRET) ||
-                (s->types[(scan) - s->window] == TYPE_OTHERS && prev_scan_type == TYPE_SECRET)) {
-                pure_len = MAX_MATCH - (int)(strend - scan);
-            }
-/*
             // if matching secrets
+            /*
             if (!allow_secret && (scan_type & match_type) & TYPE_SECRET) {
-                // gcry_randomize(nonce, sizeof(nonce), GCRY_WEAK_RANDOM);
-                blake3_hasher_finalize(s->hasher, nonce, 1);
-                printf(",%d", *nonce%100);
-                allow_secret = (*nonce % 100) < MATCH_PROB;
+                gcry_randomize(nonce, sizeof(nonce), GCRY_WEAK_RANDOM);
+                allow_secret = (*nonce % 10) < MATCH_PROB;
                 if (!allow_secret) break;
             }
-*/
+            */
 #endif
         } while (*++scan == *++match && 
 #ifndef DEBREACHX
@@ -1545,13 +1549,29 @@ local uInt longest_match(s, cur_match)
         len = MAX_MATCH - (int)(strend - scan);
         scan = strend - MAX_MATCH;
 
+#ifdef DEBREACHX
+        if (scan_type & TYPE_SECRET) {
+            // Update generator
+            int i;
+            for (i = 0; i < len; i++) {
+                if (s->types[s->strstart + i] & TYPE_SECRET) {
+                    // TODO : Make it more secure
+                    s->generator ^= ELFHash(s->window + s->strstart, len);
+                    // s->generator = s->generator ^ s->window[s->strstart + i] ^ 75169251 % 117; 
+                }
+            }
+
+            // Cut-off match len
+            if (len > MIN_MATCH)
+                len -= s->generator % (MAX_CUTOFF % (len - MIN_MATCH) + 1);
+        }
+#endif
+
 #endif /* UNALIGNED_OK */
 
         if (len > best_len) {
             s->match_start = cur_match;
             best_len = len;
-            best_type = prev_scan_type & prev_match_type;
-            best_pure_len = pure_len;
             if (len >= nice_match) break;
 #ifdef UNALIGNED_OK
             scan_end = *(ushf*)(scan+best_len-1);
@@ -1559,7 +1579,7 @@ local uInt longest_match(s, cur_match)
             scan_end1  = scan[best_len-1];
             scan_end   = scan[best_len];
 #endif
-            // printf("Match : %d, Scan : %d\n", prev_match_type, prev_scan_type);
+            // printf("Match : %d, Scan : %d\n", match_type, scan_type);
             // unsigned int i;
             // for (i = 0; i < len; i++) {
             //     printf("%c", s->window[cur_match + i]);
@@ -1572,45 +1592,6 @@ local uInt longest_match(s, cur_match)
         }
     } while ((cur_match = prev[cur_match & wmask]) > limit
              && --chain_length != 0);
-
-#ifdef ALLOW_MATCH_SECRETS
-    // ? best match 에 대해서 Random 허용
-    
-    if (best_type & TYPE_SECRET) {
-        // gcry_randomize(nonce, sizeof(nonce), GCRY_WEAK_RANDOM);
-        blake3_hasher_finalize(s->hasher, nonce, 1);
-        if ((*nonce % 100) >= MATCH_PROB) {
-            
-
-            printf("Type : %d\n", best_type);
-            // printf("Match : %d, Scan : %d\n", match_type, scan_type);
-            unsigned int i;
-            for (i = 0; i < best_len; i++) {
-                printf("%c", s->window[s->match_start + i]);
-            }
-            printf("\n");
-            for (i = 0; i < best_len; i++) {
-                printf("%c", s->window[s->strstart + i]);
-            }
-            printf("\n");
-
-            if (best_pure_len) { 
-                len = best_pure_len;
-                s->skip_len = best_len - len;
-                best_len = len;
-                // printf("hi %d\n", s->skip_len);
-            } else {
-                s->match_start = orig_cur_match;
-                s->skip_len = best_len;
-                best_len = (int)s->prev_length;
-                // printf("bye %d\n", s->skip_len);
-            }
-            printf("skip_len : %d\n", s->skip_len);
-            printf("best_pure_len : %d\n", best_pure_len);
-        }
-    }
-    
-#endif
 
     if ((uInt)best_len <= s->lookahead) return (uInt)best_len;
     return s->lookahead;
@@ -1945,14 +1926,13 @@ local void fill_window(s)
 #ifdef DEBREACHX
         /*
             * 새로 들어온 window에 대응하는 types를 채워준다
-        */
+            */
         int i;
         int *temp_secrets = s->secrets->brs;
         int *temp_inputs = s->inputs->brs;
         while (!taint_end(temp_secrets) && (temp_secrets[1] < 0 || temp_secrets[1] < s->strstart)) temp_secrets += 2;
         while (!taint_end(temp_inputs) && (temp_inputs[1] < 0 || temp_inputs[1] < s->strstart)) temp_inputs += 2;
 
-        blake3_hasher_update(s->hasher, s->window + s->strstart, s->lookahead);
         //TODO: s->strstart부터가 아니라, s->w_size 부터 해도 되지않을까?
         //TODO: maybe updating while ( i < s->strstart + s->lookahead ) will be enough
         for (i = s->strstart; i < s->window_size; i++) {
@@ -1964,7 +1944,7 @@ local void fill_window(s)
             if (!(temp_secrets[0] == 0 && temp_secrets[1] == 0) &&
                 temp_secrets[0] <= i && i <= temp_secrets[1]) {
                 s->types[i] = TYPE_SECRET;
-                // printf("%c", s->window[s->strstart + i]);
+                s->generator = s->generator ^ s->window[s->strstart + i] ^ 75169251 % 137; 
                 // printf("secret\n");
             } else if (!(temp_inputs[0] == 0 && temp_inputs[1] == 0) &&
                 temp_inputs[0] <= i && i <= temp_inputs[1]) {
@@ -2421,7 +2401,6 @@ local block_state deflate_slow(s, flush)
          */
         s->prev_length = s->match_length, s->prev_match = s->match_start;
         s->match_length = MIN_MATCH-1;
-        s->prev_skip_len = s->skip_len;
 
         if (hash_head != NIL && s->prev_length < s->max_lazy_match &&
             s->strstart - hash_head <= MAX_DIST(s)) {
@@ -2457,17 +2436,6 @@ local block_state deflate_slow(s, flush)
             _tr_tally_dist(s, s->strstart -1 - s->prev_match,
                            s->prev_length - MIN_MATCH, bflush);
 
-            
-            if (s->match_length > 2) {
-                printf("Output match len : %d\n", s->match_length);
-                // printf("Match : %d, Scan : %d\n", match_type, scan_type);
-                unsigned int i;
-                for (i = 0; i < s->match_length; i++) {
-                    printf("%c", s->window[s->strstart + i - 1]);
-                }
-                printf("\n");
-            }
-
             /* Insert in hash table all strings up to the end of the match.
              * strstart-1 and strstart are already inserted. If there is not
              * enough lookahead, the last two strings are not inserted in
@@ -2480,18 +2448,6 @@ local block_state deflate_slow(s, flush)
                     INSERT_STRING(s, s->strstart, hash_head);
                 }
             } while (--s->prev_length != 0);
-
-#ifdef ALLOW_MATCH_SECRETS
-
-            s->lookahead -= s->skip_len;
-            while (s->skip_len > 0) {
-                s->skip_len--;
-                if (++s->strstart <= max_insert) {
-                    INSERT_STRING(s, s->strstart, hash_head);
-                }
-                _tr_tally_lit(s, s->window[s->strstart], bflush);
-            }
-#endif
             s->match_available = 0;
             s->match_length = MIN_MATCH-1;
             s->strstart++;
@@ -2520,6 +2476,8 @@ local block_state deflate_slow(s, flush)
             s->lookahead--;
         }
     }
+    // printf("Rand Count : %d\nBreak Count : %d\nCont Count : %d\n", rand_count, break_count, cont_count);
+    // printf("Match Count : %d\n", match_count);
     Assert (flush != Z_NO_FLUSH, "no flush?");
     if (s->match_available) {
         Tracevv((stderr,"%c", s->window[s->strstart-1]));
