@@ -15,6 +15,7 @@
 #define DEBREACHX
 #define ALLOW_MATCH_SECRETS
 #include "zutil.h"
+#include "blake3.h"
 
 /* define NO_GZIP when compiling if you want to disable gzip header and
    trailer creation by deflate().  NO_GZIP would be used to avoid linking in
@@ -152,6 +153,8 @@ typedef struct internal_state {
     taint_state *secrets;
     taint_state *inputs;
     short *types;  //? window_size * 2
+    blake3_hasher *hasher;
+    uInt skip_len, prev_skip_len;
   #endif
 
     Posf *prev;

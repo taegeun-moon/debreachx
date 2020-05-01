@@ -54,7 +54,7 @@
 #include <time.h>
 #include <stdlib.h>
 #include <gcrypt.h>
-#define NEED_LIBGCRYPT_VERSION "1.8.5"
+#define NEED_LIBGCRYPT_VERSION "1.6.5"
 #endif
 
 const char deflate_copyright[] =
@@ -195,6 +195,7 @@ local const config configuration_table[10] = {
     s->head[s->ins_h] = (Pos)(str))
 #else
 #define INSERT_STRING(s, str, match_head) \
+    blake3_hasher_update(s->hasher, s->window + s->strstart, 1), \
    (UPDATE_HASH(s, s->ins_h, s->window[(str) + (MIN_MATCH-1)]), \
     match_head = s->prev[(str) & s->w_mask] = s->head[s->ins_h], \
     s->head[s->ins_h] = (Pos)(str))
@@ -364,7 +365,9 @@ int ZEXPORT deflateInit2_(strm, level, method, windowBits, memLevel, strategy,
     s->inputs = (taint_state *) ZALLOC(strm, 1, sizeof(taint_state));
     s->secrets = (taint_state *) ZALLOC(strm, 1, sizeof(taint_state));
 
-    // printf("allocation\n");
+    s->skip_len = 0;
+    s->hasher = (blake3_hasher *) ZALLOC(strm, 1, sizeof(blake3_hasher));
+    blake3_hasher_init(s->hasher);
 
 	s->secrets->capacity = 20;
 	s->secrets->brs = (int *) ZALLOC(strm, s->secrets->capacity, sizeof(int));
@@ -1307,14 +1310,14 @@ local void lm_init (s)
  * │ (types) │ others │ secret │ input  │  both  │
  * ├─────────┼────────┼────────┼────────┼────────┤
  * │  others │  true  │  true  │  true  │  true  │
- * │  secret │  true  │  false │  false │  false │
+ * │  secret │  true  │  true  │  false │  false │
  * │  input  │  true  │  false │  true  │  false │
  * │  both   │  true  │  false │  false │  false │
  * └─────────┴────────┴────────┴────────┴────────┘   
  */
 
 #ifdef ALLOW_MATCH_SECRETS
-#define MATCH_PROB 5
+#define MATCH_PROB 0
 int matchable[4][4] = {
     {1, 1, 1, 1},
     {1, 1, 0, 0},
@@ -1348,12 +1351,16 @@ int matchable_debreach[4][4] = {
 };
 
 #define update_type(scan, match, scan_type, match_type) \
-            (scan_type |= s->types[(scan) - s->window], \
+            (prev_scan_type = scan_type, \
+                prev_match_type = match_type, \
+                scan_type |= s->types[(scan) - s->window], \
                 match_type |= s->types[(match) - s->window])
 #define guard_type(scan_type, match_type) matchable[scan_type][match_type]
 #define update_and_guard_type(scan, match, scan_type, match_type) \
             (update_type(scan, match, scan_type, match_type), \
                 guard_type(scan_type, match_type))
+#define is_secret_match(scan_type, match_type) \
+            (scan_type & TYPE_SECRET) && (match_type & TYPE_SECRET)
 #endif
 /* For 80x86 and 680x0, an optimized version will be provided in match.asm or
  * match.S. The code will be functionally equivalent.
@@ -1390,11 +1397,18 @@ local uInt longest_match(s, cur_match)
 #endif
 
 #ifdef DEBREACHX
-    StrType scan_type, match_type;
+    StrType scan_type = 0, match_type = 0,
+            prev_scan_type = 0, prev_match_type = 0,
+            best_scan_type = 0, best_match_type = 0,
+            pure_type = 0;
     Byte nonce[1];
     Byte allow_secret;
+    IPos orig_cur_match = cur_match;
+    uInt pure_len = 0, best_pure_len = 0;
+    s->skip_len = 0;
 #endif
 
+    // printf("Find match for : %c%c%c%c%c\n", s->window[s->strstart], s->window[s->strstart+1], s->window[s->strstart+2], s->window[s->strstart+3], s->window[s->strstart+4]);
     /* The code is optimized for HASH_BITS >= 8 and MAX_MATCH-2 multiple of 16.
      * It is easy to get rid of this optimization if necessary.
      */
@@ -1415,6 +1429,7 @@ local uInt longest_match(s, cur_match)
         Assert(cur_match < s->strstart, "no future");
         match = s->window + cur_match;
         allow_secret = 0;
+        pure_len = 0;
 
         /* Skip to next match if the match length cannot increase
          * or if the match length is less than 2.  Note that the checks below
@@ -1483,9 +1498,18 @@ local uInt longest_match(s, cur_match)
         scan_type = match_type = TYPE_OTHERS;
         update_type(scan-2, match-2, scan_type, match_type);
         update_type(scan-1, match-1, scan_type, match_type);
-        update_type(scan, match, scan_type, match_type);
+        if ((match_type == TYPE_SECRET && prev_match_type == TYPE_OTHERS) ||
+            (scan_type == TYPE_SECRET && prev_scan_type == TYPE_OTHERS)) {
+            pure_len = MAX_MATCH - (int)(strend - scan) - 1;
+            pure_type = TYPE_OTHERS;
+        }
+        if ((s->types[(match-1) - s->window] == TYPE_OTHERS && prev_match_type == TYPE_SECRET) ||
+            (s->types[(scan-1) - s->window] == TYPE_OTHERS && prev_scan_type == TYPE_SECRET)) {
+            pure_len = MAX_MATCH - (int)(strend - scan) - 1;
+            pure_type = TYPE_SECRET;
+        }
 
-        if (!guard_type(scan_type, match_type)) {
+        if (!update_and_guard_type(scan, match, scan_type, match_type)) {
             scan -= 2;
             continue;
         }
@@ -1496,12 +1520,26 @@ local uInt longest_match(s, cur_match)
          */
         do {
 #ifdef ALLOW_MATCH_SECRETS
-            // if matching secrets
-            if (!allow_secret && (scan_type & match_type) & TYPE_SECRET) {
-                gcry_randomize(nonce, sizeof(nonce), GCRY_WEAK_RANDOM);
-                allow_secret = (*nonce % 10) < MATCH_PROB;
+            blake3_hasher_update(s->hasher, scan, 1);
+            if ((match_type == TYPE_SECRET && prev_match_type == TYPE_OTHERS) ||
+                (scan_type == TYPE_SECRET && prev_scan_type == TYPE_OTHERS)) {
+                pure_len = MAX_MATCH - (int)(strend - scan);
+                pure_type = TYPE_OTHERS;
+            }
+            if (!pure_len && ((s->types[(match) - s->window] == TYPE_OTHERS && prev_match_type == TYPE_SECRET) ||
+                (s->types[(scan) - s->window] == TYPE_OTHERS && prev_scan_type == TYPE_SECRET))) {
+                pure_len = MAX_MATCH - (int)(strend - scan);
+                pure_type = TYPE_SECRET;
+            }
+/*
+            // ? Alg1. Byte Skipping
+            if (!allow_secret && is_secret_match(scan_type, match_type)) {
+                // gcry_randomize(nonce, sizeof(nonce), GCRY_WEAK_RANDOM);
+                blake3_hasher_finalize(s->hasher, nonce, 1);
+                allow_secret = (*nonce % 100) < MATCH_PROB;
                 if (!allow_secret) break;
             }
+*/
 #endif
         } while (*++scan == *++match && 
 #ifndef DEBREACHX
@@ -1514,6 +1552,10 @@ local uInt longest_match(s, cur_match)
 #endif
                  scan < strend);
 
+        if (*scan != *match && scan < strend) {
+            update_type(scan, match, scan_type, match_type);
+        }
+
         Assert(scan <= s->window+(unsigned)(s->window_size-1), "wild scan");
 
 
@@ -1522,9 +1564,31 @@ local uInt longest_match(s, cur_match)
 
 #endif /* UNALIGNED_OK */
 
+#ifdef ALLOW_MATCH_SECRETS
+        // ? Alg3. Candidate Skipping
+
+        if (is_secret_match(prev_scan_type, prev_match_type)) {
+            blake3_hasher_finalize(s->hasher, nonce, 1);
+            if ((*nonce % 100) >= MATCH_PROB) {
+                if (!pure_len || pure_len <= best_len || TYPE_SECRET) {
+                    // if pure secrets, or non-secret is not longer than best_len
+                    continue;
+                } else if (pure_type == TYPE_OTHERS) {
+                    if (pure_len > best_len) s->skip_len = len - pure_len;
+                    len = pure_len;
+                }
+            } else if (len > best_len) {
+                s->skip_len = 0;
+            }
+        }
+
+#endif
         if (len > best_len) {
             s->match_start = cur_match;
             best_len = len;
+            best_scan_type = prev_scan_type;
+            best_match_type = prev_match_type;
+            best_pure_len = pure_len;
             if (len >= nice_match) break;
 #ifdef UNALIGNED_OK
             scan_end = *(ushf*)(scan+best_len-1);
@@ -1532,7 +1596,8 @@ local uInt longest_match(s, cur_match)
             scan_end1  = scan[best_len-1];
             scan_end   = scan[best_len];
 #endif
-            // printf("Match : %d, Scan : %d\n", match_type, scan_type);
+            // printf("Match : %d, Scan : %d\n", prev_match_type, prev_scan_type);
+            // printf("pure_len : %d\n", pure_len);
             // unsigned int i;
             // for (i = 0; i < len; i++) {
             //     printf("%c", s->window[cur_match + i]);
@@ -1545,6 +1610,38 @@ local uInt longest_match(s, cur_match)
         }
     } while ((cur_match = prev[cur_match & wmask]) > limit
              && --chain_length != 0);
+
+#ifdef ALLOW_MATCH_SECRETS
+    // ? Alg2. Best Match Skipping
+/*
+    if (is_secret_match(best_scan_type, best_match_type)) {
+        // gcry_randomize(nonce, sizeof(nonce), GCRY_WEAK_RANDOM);
+        blake3_hasher_finalize(s->hasher, nonce, 1);
+        if ((*nonce % 100) >= MATCH_PROB) {
+
+            if (best_pure_len) { 
+                if (pure_type == TYPE_OTHERS) {
+                    len = best_pure_len;
+                    s->skip_len = best_len - len;
+                    best_len = len;
+                } else if (pure_type == TYPE_SECRET) {
+                    s->match_start = orig_cur_match;
+                    s->skip_len = best_pure_len;
+                    best_len = (int)s->prev_length;
+                }
+                // printf("hi : %d\n",  s->skip_len);
+            } else {
+                s->match_start = orig_cur_match;
+                s->skip_len = best_len;
+                best_len = (int)s->prev_length;
+                // printf("bye %d\n", s->skip_len);
+            }
+            // printf("skip_len : %d\n", s->skip_len);
+            // printf("best_pure_len : %d\n", best_pure_len);
+        }
+    }
+*/
+#endif
 
     if ((uInt)best_len <= s->lookahead) return (uInt)best_len;
     return s->lookahead;
@@ -1718,8 +1815,8 @@ int append_brs_into_strm(strm, brs, len, taint)
         taint->brs[cur_size + i] = brs[i] + offset;
     }
 
-    taint->brs[cur_size + len - 2] = 0;
-    taint->brs[cur_size + len - 1] = 0;
+    taint->brs[cur_size + len] = 0;
+    taint->brs[cur_size + len + 1] = 0;
     /* 
     // if the the next_taint info for some window index *i* was set while we had less
 	// than MAX_MATCH bytes of lookahead, it's possible that next_taint[i] is no longer
@@ -1879,13 +1976,14 @@ local void fill_window(s)
 #ifdef DEBREACHX
         /*
             * 새로 들어온 window에 대응하는 types를 채워준다
-            */
+        */
         int i;
         int *temp_secrets = s->secrets->brs;
         int *temp_inputs = s->inputs->brs;
         while (!taint_end(temp_secrets) && (temp_secrets[1] < 0 || temp_secrets[1] < s->strstart)) temp_secrets += 2;
         while (!taint_end(temp_inputs) && (temp_inputs[1] < 0 || temp_inputs[1] < s->strstart)) temp_inputs += 2;
 
+        blake3_hasher_update(s->hasher, s->window + s->strstart, s->lookahead);
         //TODO: s->strstart부터가 아니라, s->w_size 부터 해도 되지않을까?
         //TODO: maybe updating while ( i < s->strstart + s->lookahead ) will be enough
         for (i = s->strstart; i < s->window_size; i++) {
@@ -1897,13 +1995,16 @@ local void fill_window(s)
             if (!(temp_secrets[0] == 0 && temp_secrets[1] == 0) &&
                 temp_secrets[0] <= i && i <= temp_secrets[1]) {
                 s->types[i] = TYPE_SECRET;
+                // printf("%c", s->window[s->strstart + i]);
                 // printf("secret\n");
             } else if (!(temp_inputs[0] == 0 && temp_inputs[1] == 0) &&
                 temp_inputs[0] <= i && i <= temp_inputs[1]) {
                 s->types[i] = TYPE_INPUT;
+                // printf("%c", s->window[s->strstart + i]);
                 // printf("input\n");
             } else {
                 s->types[i] = TYPE_OTHERS;
+                // printf("%c", s->window[s->strstart + i]);
                 // printf("others\n");
             }
         }
@@ -2353,6 +2454,7 @@ local block_state deflate_slow(s, flush)
          */
         s->prev_length = s->match_length, s->prev_match = s->match_start;
         s->match_length = MIN_MATCH-1;
+        s->prev_skip_len = s->skip_len;
 
         if (hash_head != NIL && s->prev_length < s->max_lazy_match &&
             s->strstart - hash_head <= MAX_DIST(s)) {
@@ -2387,7 +2489,18 @@ local block_state deflate_slow(s, flush)
 
             _tr_tally_dist(s, s->strstart -1 - s->prev_match,
                            s->prev_length - MIN_MATCH, bflush);
-
+/*
+            if (s->prev_length > 2) {
+                printf("Output match len : %d\n", s->prev_length);
+                printf("Skip len : %d\n", s->prev_skip_len);
+                printf("Offset : %u\n", s->strstart -1 - s->prev_match);
+                unsigned int i;
+                for (i = 0; i < s->prev_length; i++) {
+                    printf("%c", s->window[s->strstart + i - 1]);
+                }
+                printf("\n");
+            }
+*/
             /* Insert in hash table all strings up to the end of the match.
              * strstart-1 and strstart are already inserted. If there is not
              * enough lookahead, the last two strings are not inserted in
@@ -2400,6 +2513,22 @@ local block_state deflate_slow(s, flush)
                     INSERT_STRING(s, s->strstart, hash_head);
                 }
             } while (--s->prev_length != 0);
+
+#ifdef ALLOW_MATCH_SECRETS
+
+            s->lookahead -= s->prev_skip_len;
+            // if (s->prev_skip_len > 0) {
+            //     printf("skipping : ");
+            // }
+            while (s->prev_skip_len > 0) {
+                s->prev_skip_len--;
+                if (++s->strstart <= max_insert) {
+                    INSERT_STRING(s, s->strstart, hash_head);
+                }
+                _tr_tally_lit(s, s->window[s->strstart], bflush);
+                // printf("%c", s->window[s->strstart]);
+            }
+#endif
             s->match_available = 0;
             s->match_length = MIN_MATCH-1;
             s->strstart++;
@@ -2557,163 +2686,3 @@ local block_state deflate_huff(s, flush)
         FLUSH_BLOCK(s, 0);
     return block_done;
 }
-
-#ifndef FASTEST
-#ifdef DEBREACHX
-
-local block_state deflate_debreachx(s, flush)
-    deflate_state *s;
-    int flush;
-{
-    IPos hash_head;          /* head of hash chain */
-    int bflush;              /* set if current block must be flushed */
-
-/*
-    s->secrets->cur_taint = s->secrets->brs;
-    s->inputs->cur_taint = s->inputs->brs;
-    
-    while(!(s->secrets->cur_taint[0] == 0 && s->secrets->cur_taint[1] == 0)) {
-        if (s->secrets->cur_taint[0] < 0 && s->secrets->cur_taint[1] < 0) {
-            s->secrets->cur_taint += 2;
-            // passed this byte range already
-        } else if (s->strstart >= s->secrets->cur_taint[0] && s->strstart <= s->secrets->cur_taint[1]) {
-            break;
-        } else if (s->strstart > s->secrets->cur_taint[1]) {
-            s->secrets->cur_taint += 2;
-        } else if (s->strstart < s->secrets->cur_taint[0]) {
-            break;
-        }
-    }
-    
-    while(!(s->inputs->cur_taint[0] == 0 && s->inputs->cur_taint[1] == 0)) {
-        if (s->inputs->cur_taint[0] < 0 && s->inputs->cur_taint[1] < 0) {
-            s->inputs->cur_taint += 2;
-            // passed this byte range already
-        } else if (s->strstart >= s->inputs->cur_taint[0] && s->strstart <= s->inputs->cur_taint[1]) {
-            break;
-        } else if (s->strstart > s->inputs->cur_taint[1]) {
-            s->secrets->cur_taint += 2;
-        } else if (s->strstart < s->inputs->cur_taint[0]) {
-            break;
-        }
-    }
-*/
-    /* Process the input block. */
-    for (;;) {
-        /* Make sure that we always have enough lookahead, except
-         * at the end of the input file. We need MAX_MATCH bytes
-         * for the next match, plus MIN_MATCH bytes to insert the
-         * string following the next match.
-         */
-        if (s->lookahead < MIN_LOOKAHEAD) {
-            fill_window(s);
-            if (s->lookahead < MIN_LOOKAHEAD && flush == Z_NO_FLUSH) {
-                return need_more;
-            }
-            if (s->lookahead == 0) break; /* flush the current block */
-        }
-
-        /* Insert the string window[strstart .. strstart+2] in the
-         * dictionary, and set hash_head to the head of the hash chain:
-         */
-        hash_head = NIL;
-        if (s->lookahead >= MIN_MATCH) {
-            INSERT_STRING(s, s->strstart, hash_head);
-        }
-
-        /* Find the longest match, discarding those <= prev_length.
-         */
-        s->prev_length = s->match_length, s->prev_match = s->match_start;
-        s->match_length = MIN_MATCH-1;
-
-        if (hash_head != NIL && s->prev_length < s->max_lazy_match &&
-            s->strstart - hash_head <= MAX_DIST(s)) {
-            /* To simplify the code, we prevent matches with the string
-             * of window index 0 (in particular we have to avoid a match
-             * of the string with itself at the start of the input file).
-             */
-            s->match_length = longest_match (s, hash_head);
-            /* longest_match() sets match_start */
-
-            if (s->match_length <= 5 && (s->strategy == Z_FILTERED
-#if TOO_FAR <= 32767
-                || (s->match_length == MIN_MATCH &&
-                    s->strstart - s->match_start > TOO_FAR)
-#endif
-                )) {
-
-                /* If prev_match is also MIN_MATCH, match_start is garbage
-                 * but we will ignore the current match anyway.
-                 */
-                s->match_length = MIN_MATCH-1;
-            }
-        }
-        /* If there was a match at the previous step and the current
-         * match is not better, output the previous match:
-         */
-        if (s->prev_length >= MIN_MATCH && s->match_length <= s->prev_length) {
-            uInt max_insert = s->strstart + s->lookahead - MIN_MATCH;
-            /* Do not insert strings in hash table beyond this. */
-
-            check_match(s, s->strstart-1, s->prev_match, s->prev_length);
-
-            _tr_tally_dist(s, s->strstart -1 - s->prev_match,
-                           s->prev_length - MIN_MATCH, bflush);
-
-            /* Insert in hash table all strings up to the end of the match.
-             * strstart-1 and strstart are already inserted. If there is not
-             * enough lookahead, the last two strings are not inserted in
-             * the hash table.
-             */
-            s->lookahead -= s->prev_length-1;
-            s->prev_length -= 2;
-            do {
-                if (++s->strstart <= max_insert) {
-                    INSERT_STRING(s, s->strstart, hash_head);
-                }
-            } while (--s->prev_length != 0);
-            s->match_available = 0;
-            s->match_length = MIN_MATCH-1;
-            s->strstart++;
-
-            if (bflush) FLUSH_BLOCK(s, 0);
-
-        } else if (s->match_available) {
-            /* If there was no match at the previous position, output a
-             * single literal. If there was a match but the current match
-             * is longer, truncate the previous match to a single literal.
-             */
-            Tracevv((stderr,"%c", s->window[s->strstart-1]));
-            _tr_tally_lit(s, s->window[s->strstart-1], bflush);
-            if (bflush) {
-                FLUSH_BLOCK_ONLY(s, 0);
-            }
-            s->strstart++;
-            s->lookahead--;
-            if (s->strm->avail_out == 0) return need_more;
-        } else {
-            /* There is no previous match to compare with, wait for
-             * the next step to decide.
-             */
-            s->match_available = 1;
-            s->strstart++;
-            s->lookahead--;
-        }
-    }
-    Assert (flush != Z_NO_FLUSH, "no flush?");
-    if (s->match_available) {
-        Tracevv((stderr,"%c", s->window[s->strstart-1]));
-        _tr_tally_lit(s, s->window[s->strstart-1], bflush);
-        s->match_available = 0;
-    }
-    s->insert = s->strstart < MIN_MATCH-1 ? s->strstart : MIN_MATCH-1;
-    if (flush == Z_FINISH) {
-        FLUSH_BLOCK(s, 1);
-        return finish_done;
-    }
-    if (s->last_lit)
-        FLUSH_BLOCK(s, 0);
-    return block_done;
-}
-#endif /* FASTEST */
-#endif /* DEBREACHX */
