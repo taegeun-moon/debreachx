@@ -556,6 +556,9 @@ int ZEXPORT deflateResetKeep (strm)
 	s->inputs->brs[0] = 0;
 	s->inputs->brs[1] = 0;
 	s->inputs->cur_taint = s->inputs->brs;
+
+    s->skip_len = 0;
+    blake3_hasher_init(s->hasher);
 #endif
 
     _tr_init(s);
@@ -1317,7 +1320,7 @@ local void lm_init (s)
  */
 
 #ifdef ALLOW_MATCH_SECRETS
-#define MATCH_PROB 0
+#define MATCH_PROB 9
 int matchable[4][4] = {
     {1, 1, 1, 1},
     {1, 1, 0, 0},
@@ -1570,16 +1573,18 @@ local uInt longest_match(s, cur_match)
         if (is_secret_match(prev_scan_type, prev_match_type)) {
             blake3_hasher_finalize(s->hasher, nonce, 1);
             if ((*nonce % 100) >= MATCH_PROB) {
-                if (!pure_len || pure_len <= best_len || TYPE_SECRET) {
+                if (!pure_len || pure_len <= best_len || pure_type == TYPE_SECRET) {
                     // if pure secrets, or non-secret is not longer than best_len
                     continue;
                 } else if (pure_type == TYPE_OTHERS) {
-                    if (pure_len > best_len) s->skip_len = len - pure_len;
+                    // if (pure_len > best_len) s->skip_len = len - pure_len;
                     len = pure_len;
                 }
             } else if (len > best_len) {
-                s->skip_len = 0;
+                // s->skip_len = 0;
             }
+        } else if (len > best_len) {
+            // s->skip_len = 0;
         }
 
 #endif
@@ -1596,17 +1601,17 @@ local uInt longest_match(s, cur_match)
             scan_end1  = scan[best_len-1];
             scan_end   = scan[best_len];
 #endif
-            // printf("Match : %d, Scan : %d\n", prev_match_type, prev_scan_type);
-            // printf("pure_len : %d\n", pure_len);
-            // unsigned int i;
-            // for (i = 0; i < len; i++) {
-            //     printf("%c", s->window[cur_match + i]);
-            // }
-            // printf("\n");
-            // for (i = 0; i < len; i++) {
-            //     printf("%c", s->window[s->strstart + i]);
-            // }
-            // printf("\n");
+            printf("Match : %d, Scan : %d\n", prev_match_type, prev_scan_type);
+            printf("pure_len : %d\n", pure_len);
+            unsigned int i;
+            for (i = 0; i < len; i++) {
+                printf("%c", s->window[cur_match + i]);
+            }
+            printf("\n");
+            for (i = 0; i < len; i++) {
+                printf("%c", s->window[s->strstart + i]);
+            }
+            printf("\n");
         }
     } while ((cur_match = prev[cur_match & wmask]) > limit
              && --chain_length != 0);
@@ -2489,18 +2494,18 @@ local block_state deflate_slow(s, flush)
 
             _tr_tally_dist(s, s->strstart -1 - s->prev_match,
                            s->prev_length - MIN_MATCH, bflush);
-/*
+
             if (s->prev_length > 2) {
-                printf("Output match len : %d\n", s->prev_length);
-                printf("Skip len : %d\n", s->prev_skip_len);
-                printf("Offset : %u\n", s->strstart -1 - s->prev_match);
-                unsigned int i;
-                for (i = 0; i < s->prev_length; i++) {
-                    printf("%c", s->window[s->strstart + i - 1]);
-                }
-                printf("\n");
+                // printf("Output match len : %d\n", s->prev_length);
+                // printf("Skip len : %d\n", s->prev_skip_len);
+                // printf("Offset : %u\n", s->strstart -1 - s->prev_match);
+                // unsigned int i;
+                // for (i = 0; i < s->prev_length; i++) {
+                //     printf("%c", s->window[s->strstart + i - 1]);
+                // }
+                // printf("\n");
             }
-*/
+
             /* Insert in hash table all strings up to the end of the match.
              * strstart-1 and strstart are already inserted. If there is not
              * enough lookahead, the last two strings are not inserted in

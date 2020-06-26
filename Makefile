@@ -18,28 +18,28 @@
 
 CC=gcc
 
-CFLAGS=-O3 -DHAVE_HIDDEN $(LIBGCRYPT)
+CFLAGS=-O3 -D_LARGEFILE64_SOURCE=1 -DHAVE_HIDDEN
 #CFLAGS=-O -DMAX_WBITS=14 -DMAX_MEM_LEVEL=7
 #CFLAGS=-g -DZLIB_DEBUG
 #CFLAGS=-O3 -Wall -Wwrite-strings -Wpointer-arith -Wconversion \
 #           -Wstrict-prototypes -Wmissing-prototypes
 
-SFLAGS=-O3 -fPIC -DHAVE_HIDDEN
+SFLAGS=-O3 -fPIC -D_LARGEFILE64_SOURCE=1 -DHAVE_HIDDEN
 LDFLAGS=
 TEST_LDFLAGS=-L. libz.a
-LDSHARED=gcc $(LIBGCRYPT) -dynamiclib -install_name ${exec_prefix}/lib/libz.1.dylib -compatibility_version 1 -current_version 1.2.11
+LDSHARED=gcc -shared -Wl,-soname,libz.so.1,--version-script,zlib.map
 CPP=gcc -E
 
 STATICLIB=libz.a
-SHAREDLIB=libz.dylib
-SHAREDLIBV=libz.1.2.11.dylib
-SHAREDLIBM=libz.1.dylib
+SHAREDLIB=libz.so
+SHAREDLIBV=libz.so.1.2.11
+SHAREDLIBM=libz.so.1
 LIBS=$(STATICLIB) $(SHAREDLIBV)
 LIBGCRYPT=-L/usr/local/lib -lgcrypt -lgpg-error
 LIBBLAKE3=-L./blake3 -I./blake3 -lblake3 
 
-AR=libtool
-ARFLAGS=-o
+AR=ar
+ARFLAGS=rc
 RANLIB=ranlib
 LDCONFIG=ldconfig
 LDSHAREDLIBC=-lc
@@ -75,9 +75,9 @@ OBJS = $(OBJC) $(OBJA)
 
 PIC_OBJS = $(PIC_OBJC) $(PIC_OBJA)
 
-all: static shared
+all: static shared all64
 
-static: example$(EXE) minigzip$(EXE) minidebreachx$(EXE)
+static: example$(EXE) minigzip$(EXE) minipexcoin$(EXE)
 
 shared: examplesh$(EXE) minigzipsh$(EXE)
 
@@ -85,7 +85,7 @@ all64: example64$(EXE) minigzip64$(EXE)
 
 check: test
 
-test: all teststatic testshared
+test: all teststatic testshared test64
 
 teststatic: static
 	@TMPST=tmpst_$$; \
@@ -146,20 +146,22 @@ match.lo: match.S
 	rm -f _match.s
 
 example.o: $(SRCDIR)test/example.c $(SRCDIR)zlib.h zconf.h
-	$(CC) $(CFLAGS) $(ZINCOUT) -c -o $@ $(SRCDIR)test/example.c
+	$(CC) $(CFLAGS) $(ZINCOUT) -c -o $@ $(SRCDIR)test/example.c $(LIBGCRYPT) $(LIBBLAKE3)
 
 minigzip.o: $(SRCDIR)test/minigzip.c $(SRCDIR)zlib.h zconf.h
-	$(CC) $(CFLAGS) $(ZINCOUT)  -c -o $@ $(SRCDIR)test/minigzip.c
-
-minidebreachx.o: $(SRCDIR)test/minidebreachx.c $(SRCDIR)zlib.h zconf.h
-	$(CC) $(CFLAGS) -DZ_SOLO $(ZINCOUT) -d -c -o $@ $(SRCDIR)test/minidebreachx.c
+	$(CC) $(CFLAGS) $(ZINCOUT) -c -o $@ $(SRCDIR)test/minigzip.c $(LIBGCRYPT) $(LIBBLAKE3)
 
 example64.o: $(SRCDIR)test/example.c $(SRCDIR)zlib.h zconf.h
-	$(CC) $(CFLAGS) $(ZINCOUT) -D_FILE_OFFSET_BITS=64 -c -o $@ $(SRCDIR)test/example.c
+	$(CC) $(CFLAGS) $(ZINCOUT) -D_FILE_OFFSET_BITS=64 -c -o $@ $(SRCDIR)test/example.c $(LIBGCRYPT) $(LIBBLAKE3)
 
 minigzip64.o: $(SRCDIR)test/minigzip.c $(SRCDIR)zlib.h zconf.h
-	$(CC) $(CFLAGS) $(ZINCOUT) -D_FILE_OFFSET_BITS=64 -c -o $@ $(SRCDIR)test/minigzip.c
+	$(CC) $(CFLAGS) $(ZINCOUT) -D_FILE_OFFSET_BITS=64 -c -o $@ $(SRCDIR)test/minigzip.c $(LIBGCRYPT) $(LIBBLAKE3)
 
+minipexcoin.o: $(SRCDIR)test/minipexcoin.c $(SRCDIR)zlib.h zconf.h
+	$(CC) $(CFLAGS) -DZ_SOLO $(ZINCOUT) -c -o $@ $(SRCDIR)test/minipexcoin.c $(LIBGCRYPT) $(LIBBLAKE3)
+
+timeit.o: $(SRCDIR)test/timeit.c $(SRCDIR)zlib.h zconf.h
+	$(CC) $(CFLAGS) -g -I. -c -o $@ test/timeit.c $(LIBGCRYPT)
 
 adler32.o: $(SRCDIR)adler32.c
 	$(CC) $(CFLAGS) $(ZINC) -c -o $@ $(SRCDIR)adler32.c
@@ -168,7 +170,7 @@ crc32.o: $(SRCDIR)crc32.c
 	$(CC) $(CFLAGS) $(ZINC) -c -o $@ $(SRCDIR)crc32.c
 
 deflate.o: $(SRCDIR)deflate.c
-	$(CC) $(CFLAGS) $(ZINC) $(LIBBLAKE3) -c -o $@ $(SRCDIR)deflate.c
+	$(CC) $(CFLAGS) $(ZINC) -c -o $@ $(SRCDIR)deflate.c $(LIBGCRYPT) $(LIBBLAKE3)
 
 infback.o: $(SRCDIR)infback.c
 	$(CC) $(CFLAGS) $(ZINC) -c -o $@ $(SRCDIR)infback.c
@@ -183,7 +185,7 @@ inftrees.o: $(SRCDIR)inftrees.c
 	$(CC) $(CFLAGS) $(ZINC) -c -o $@ $(SRCDIR)inftrees.c
 
 trees.o: $(SRCDIR)trees.c
-	$(CC) $(CFLAGS) $(ZINC) $(LIBBLAKE3) -c -o $@ $(SRCDIR)trees.c
+	$(CC) $(CFLAGS) $(ZINC) -c -o $@ $(SRCDIR)trees.c $(LIBBLAKE3)
 
 zutil.o: $(SRCDIR)zutil.c
 	$(CC) $(CFLAGS) $(ZINC) -c -o $@ $(SRCDIR)zutil.c
@@ -219,7 +221,7 @@ crc32.lo: $(SRCDIR)crc32.c
 
 deflate.lo: $(SRCDIR)deflate.c
 	-@mkdir objs 2>/dev/null || test -d objs
-	$(CC) $(SFLAGS) $(ZINC) -DPIC -c -o objs/deflate.o $(SRCDIR)deflate.c
+	$(CC) $(SFLAGS) $(ZINC) -DPIC -c -o objs/deflate.o $(SRCDIR)deflate.c $(LIBGCRYPT) $(LIBBLAKE3)
 	-@mv objs/deflate.o $@
 
 infback.lo: $(SRCDIR)infback.c
@@ -244,7 +246,7 @@ inftrees.lo: $(SRCDIR)inftrees.c
 
 trees.lo: $(SRCDIR)trees.c
 	-@mkdir objs 2>/dev/null || test -d objs
-	$(CC) $(SFLAGS) $(ZINC) -DPIC -c -o objs/trees.o $(SRCDIR)trees.c
+	$(CC) $(SFLAGS) $(ZINC) -DPIC -c -o objs/trees.o $(SRCDIR)trees.c $(LIBBLAKE3)
 	-@mv objs/trees.o $@
 
 zutil.lo: $(SRCDIR)zutil.c
@@ -291,25 +293,28 @@ placebo $(SHAREDLIBV): $(PIC_OBJS) libz.a
 	-@rmdir objs
 
 example$(EXE): example.o $(STATICLIB)
-	$(CC) $(CFLAGS) -o $@ example.o $(TEST_LDFLAGS)
+	$(CC) $(CFLAGS) -o $@ example.o $(TEST_LDFLAGS) $(LIBGCRYPT) $(LIBBLAKE3)
 
 minigzip$(EXE): minigzip.o $(STATICLIB)
-	$(CC) $(CFLAGS) -o $@ minigzip.o $(TEST_LDFLAGS)
-
-minidebreachx$(EXE): minidebreachx.o $(STATICLIB)
-	$(CC) $(CFLAGS)  $(LIBBLAKE3) -o $@ minidebreachx.o $(TEST_LDFLAGS)
+	$(CC) $(CFLAGS) -o $@ minigzip.o $(TEST_LDFLAGS) $(LIBGCRYPT) $(LIBBLAKE3)
 
 examplesh$(EXE): example.o $(SHAREDLIBV)
-	$(CC) $(CFLAGS) -o $@ example.o -L. $(SHAREDLIBV)
+	$(CC) $(CFLAGS) -o $@ example.o -L. $(SHAREDLIBV) $(LIBGCRYPT) $(LIBBLAKE3)
 
 minigzipsh$(EXE): minigzip.o $(SHAREDLIBV)
-	$(CC) $(CFLAGS) -o $@ minigzip.o -L. $(SHAREDLIBV)
+	$(CC) $(CFLAGS) -o $@ minigzip.o -L. $(SHAREDLIBV) $(LIBGCRYPT) $(LIBBLAKE3)
 
 example64$(EXE): example64.o $(STATICLIB)
-	$(CC) $(CFLAGS) -o $@ example64.o $(TEST_LDFLAGS)
+	$(CC) $(CFLAGS) -o $@ example64.o $(TEST_LDFLAGS) $(LIBGCRYPT) $(LIBBLAKE3)
 
 minigzip64$(EXE): minigzip64.o $(STATICLIB)
-	$(CC) $(CFLAGS) -o $@ minigzip64.o $(TEST_LDFLAGS)
+	$(CC) $(CFLAGS) -o $@ minigzip64.o $(TEST_LDFLAGS) $(LIBGCRYPT) $(LIBBLAKE3)
+
+minipexcoin$(EXE): minipexcoin.o $(STATICLIB)
+	$(CC) $(CFLAGS) -o $@ minipexcoin.o $(TEST_LDFLAGS) $(LIBGCRYPT) $(LIBBLAKE3)
+
+timeit$(EXE): timeit.o $(STATICLIB)
+	$(CC) $(CFLAGS) -g -o $@ timeit.o $(TEST_LDFLAGS) $(LIBGCRYPT) $(LIBBLAKE3)
 
 install-libs: $(LIBS)
 	-@if [ ! -d $(DESTDIR)$(exec_prefix)  ]; then mkdir -p $(DESTDIR)$(exec_prefix); fi
@@ -375,7 +380,7 @@ mostlyclean: clean
 clean:
 	rm -f *.o *.lo *~ \
 	   example$(EXE) minigzip$(EXE) examplesh$(EXE) minigzipsh$(EXE) \
-	   example64$(EXE) minigzip64$(EXE) minidebreachx$(EXE) \
+	   example64$(EXE) minigzip64$(EXE) minipexcoin$(EXE) timeit* \
 	   infcover \
 	   libz.* foo.gz so_locations \
 	   _match.s maketree contrib/infback9/*.o
