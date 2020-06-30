@@ -13,7 +13,7 @@
 #ifndef DEFLATE_H
 #define DEFLATE_H
 #define DEBREACHX
-// #define ALLOW_MATCH_SECRETS
+#define ALLOW_MATCH_SECRETS
 #include "zutil.h"
 #include "blake3.h"
 

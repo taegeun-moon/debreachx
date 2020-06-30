@@ -1601,17 +1601,17 @@ local uInt longest_match(s, cur_match)
             scan_end1  = scan[best_len-1];
             scan_end   = scan[best_len];
 #endif
-            printf("Match : %d, Scan : %d\n", prev_match_type, prev_scan_type);
-            printf("pure_len : %d\n", pure_len);
-            unsigned int i;
-            for (i = 0; i < len; i++) {
-                printf("%c", s->window[cur_match + i]);
-            }
-            printf("\n");
-            for (i = 0; i < len; i++) {
-                printf("%c", s->window[s->strstart + i]);
-            }
-            printf("\n");
+            // printf("Match : %d, Scan : %d\n", prev_match_type, prev_scan_type);
+            // printf("pure_len : %d\n", pure_len);
+            // unsigned int i;
+            // for (i = 0; i < len; i++) {
+            //     printf("%c", s->window[cur_match + i]);
+            // }
+            // printf("\n");
+            // for (i = 0; i < len; i++) {
+            //     printf("%c", s->window[s->strstart + i]);
+            // }
+            // printf("\n");
         }
     } while ((cur_match = prev[cur_match & wmask]) > limit
              && --chain_length != 0);
