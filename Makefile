@@ -77,7 +77,7 @@ PIC_OBJS = $(PIC_OBJC) $(PIC_OBJA)
 
 all: static shared all64
 
-static: example$(EXE) minigzip$(EXE) minipexcoin$(EXE)
+static: example$(EXE) minigzip$(EXE) minipexcoin$(EXE) timeit$(EXE)
 
 shared: examplesh$(EXE) minigzipsh$(EXE)
 
@@ -380,7 +380,7 @@ mostlyclean: clean
 clean:
 	rm -f *.o *.lo *~ \
 	   example$(EXE) minigzip$(EXE) examplesh$(EXE) minigzipsh$(EXE) \
-	   example64$(EXE) minigzip64$(EXE) minipexcoin$(EXE) timeit* \
+	   example64$(EXE) minigzip64$(EXE) minipexcoin$(EXE) timeit$(EXE) \
 	   infcover \
 	   libz.* foo.gz so_locations \
 	   _match.s maketree contrib/infback9/*.o

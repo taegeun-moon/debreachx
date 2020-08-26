@@ -154,6 +154,8 @@ typedef struct internal_state {
     taint_state *inputs;
     short *types;  //? window_size * 2
     blake3_hasher *hasher;
+    Byte nonces[BLAKE3_OUT_LEN];
+    uInt nidx;
     uInt skip_len, prev_skip_len;
   #endif
 

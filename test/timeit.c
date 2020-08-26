@@ -5,7 +5,7 @@
 #include <stdlib.h>
 #include <ctype.h>
 
-#define TRIALS 10
+#define TRIALS 100
 #define WARMUPS 10
 #define BUFLEN 16384
 
@@ -295,6 +295,8 @@ int main(argc, argv)
 		printf("%.9f, ",
 			((double)tend.tv_sec + 1.0e-9*tend.tv_nsec) - 
 			((double)tstart.tv_sec + 1.0e-9*tstart.tv_nsec));
+
+        // printf("%ld,\n", out->strm.total_out);
 	}
 
 	// Cleanup
@@ -303,5 +305,6 @@ int main(argc, argv)
 	fclose(in);
 	free(brs_input);
 	free(brs_secret);
+    // printf("\n");
 	return 0;
 }
