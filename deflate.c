@@ -1349,7 +1349,7 @@ local void lm_init (s)
  */
 
 #ifdef ALLOW_MATCH_SECRETS
-#define MATCH_PROB 0
+#define MATCH_PROB 1
 int matchable[4][4] = {
     {1, 1, 1, 1},
     {1, 1, 0, 0},
